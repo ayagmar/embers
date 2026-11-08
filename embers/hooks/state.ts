@@ -12,13 +12,20 @@ export function readRun($: EngineInterface): Promise<EmbersRun> {
   return read($, run)
 }
 
-/** The one writer of the state: runs a transition below over the current value. */
+/**
+ * The one writer of the state: runs a transition below over the current value.
+ * Off in this process goes into every write, so it survives a reload that
+ * follows a `/clear`; `/embers on` clears the variable first.
+ */
 export function apply<A extends unknown[]>(
   $: EngineInterface,
   transition: (r: EmbersRun, ...input: A) => EmbersRun,
   ...input: A
 ): Promise<EmbersRun> {
-  return update($, run, r => transition(r, ...input))
+  return update($, run, r => {
+    const next = transition(r, ...input)
+    return inProcess.isOff && !next.isOff ? { ...next, isOff: true } : next
+  })
 }
 
 /**
