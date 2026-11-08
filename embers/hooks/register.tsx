@@ -1,13 +1,11 @@
 import type { Register } from 'claude-code'
 
 import {
+  afterClear,
   arm,
-  change,
-  cleared,
   coldPrompt,
   observeTtl,
   offerHandoff,
-  readRun,
   seedFromHandoff,
   status,
   ttlMs,
@@ -16,6 +14,7 @@ import {
 import { disarm, inProcess } from './process'
 import { handoffKey, marginFor, sweep, ttlKey } from './records'
 import { bandLine, CANCEL, forkFigures, isPersonPrompt, k, MINUTE, readConfig, WRITE } from './shared'
+import { apply, forkFailed, isOff, prefixReplaced, promptStarted, readRun, switchedOff, turnEnded } from './state'
 
 export const register: Register = (on, options) => {
   const config = readConfig(options)
@@ -28,9 +27,9 @@ export const register: Register = (on, options) => {
     })
     const [now, ttl] = await Promise.all([$.clock.now(), ttlMs($, config)])
     // Fires on reload too: the state survived, the timer and any swap in flight did not.
-    const s = await change($, r => ({ ...r, phase: r.phase === 'writing' ? 'idle' : r.phase }))
-    if (s.phase === 'armed' && s.deadline !== undefined) arm($, config, now, s.deadline)
-    if (s.lastCacheTouch === undefined) await seedFromHandoff($)
+    const s = await apply($, forkFailed)
+    if (s.phase.kind === 'armed') arm($, config, now, s.phase.deadline)
+    if (s.phase.cache === undefined) await seedFromHandoff($, ttl)
     await sweep($, now, ttl)
     // Once per session, never under -p, and not into a resumed conversation,
     // which already holds its own context.
@@ -49,20 +48,19 @@ export const register: Register = (on, options) => {
     // Asked again, it would start a second cold fork or send cold under the swap.
     if (inProcess.isReshaping) return { drop: 'embers: still swapping; send again when it says done' }
     disarm()
-    const s = await change($, r => ({ ...r, phase: 'idle', deadline: undefined }))
-    if (s.isOff || config.coldMode === 'off' || config.coldMode === 'send' || s.lastCacheTouch === undefined) {
-      return next(e)
-    }
+    const s = await apply($, promptStarted)
+    const { cache } = s.phase
+    if (isOff(s) || config.coldMode === 'off' || config.coldMode === 'send' || cache === undefined) return next(e)
     const [now, ttl] = await Promise.all([$.clock.now(), ttlMs($, config)])
-    const idle = now - s.lastCacheTouch
+    const idle = now - cache.touchedAt
     if (idle < ttl) return next(e)
-    return (await coldPrompt($, config, idle, s.contextTokens)) ?? next(e)
+    return (await coldPrompt($, config, idle, cache.contextTokens)) ?? next(e)
   }).catch((_, e, next) => next(e))
 
   on('turn.start', async ($, e, next) => {
     if (e.agentId !== undefined) return next(e)
     disarm()
-    await change($, r => ({ ...r, phase: 'idle', deadline: undefined }))
+    await apply($, promptStarted)
     return next(e)
   }).catch((_, e, next) => next(e))
 
@@ -71,8 +69,9 @@ export const register: Register = (on, options) => {
     const [s, model, sentAt] = await Promise.all([readRun($), $.session.model(), $.clock.now()])
     const result = yield* next(e)
     // After `/model` the prefix is billed afresh: a cold read says nothing about the TTL.
-    if (s.lastCacheTouch !== undefined && s.modelAtTouch === model && result.usage !== null) {
-      await observeTtl($, config, s.lastCacheTouch, sentAt - s.lastCacheTouch, result.usage)
+    const { cache } = s.phase
+    if (cache !== undefined && cache.model === model && result.usage !== null) {
+      await observeTtl($, config, cache.touchedAt, sentAt - cache.touchedAt, result.usage)
     }
     return result
   }).catch(async function* (_, e, next) {
@@ -82,7 +81,8 @@ export const register: Register = (on, options) => {
   on('turn.complete', async ($, e, next) => {
     if (e.agentId !== undefined) return next(e)
     disarm()
-    const [now, sessionId, root, usage, ttl, model, surfaces] = await Promise.all([
+    const [before, now, sessionId, root, usage, ttl, model, surfaces] = await Promise.all([
+      readRun($),
       $.clock.now(),
       $.session.id(),
       $.session.root(),
@@ -97,20 +97,15 @@ export const register: Register = (on, options) => {
     await $.store.delete(handoffKey(root, sessionId))
     const tokens = usage.context.tokens
     const margin = marginFor(ttl / MINUTE, config.marginMinutes) * MINUTE
-    const s = await change($, r => {
-      const isArmed = !r.isOff && isInteractive && tokens !== undefined && tokens >= config.minContextTokens
-      return {
-        ...r,
-        phase: isArmed ? 'armed' : 'idle',
-        lastCacheTouch: now,
-        modelAtTouch: model,
-        contextTokens: tokens,
-        deadline: isArmed ? now + ttl - margin : undefined,
-        warmUntil: now + ttl,
-        handoffAt: undefined,
-      }
+    const isArmed = !isOff(before) && isInteractive && tokens !== undefined && tokens >= config.minContextTokens
+    const s = await apply($, turnEnded, {
+      now,
+      ttl,
+      model,
+      contextTokens: tokens,
+      deadline: isArmed ? now + ttl - margin : undefined,
     })
-    if (s.phase === 'armed' && s.deadline !== undefined) arm($, config, now, s.deadline)
+    if (s.phase.kind === 'armed') arm($, config, now, s.phase.deadline)
     return next(e)
   }).catch((_, e, next) => next(e))
 
@@ -119,14 +114,7 @@ export const register: Register = (on, options) => {
     if (e.agentId === undefined && e.trigger !== 'precompute' && result.skip === undefined) {
       // A new prefix: the next request writes the cache whatever the clock says.
       disarm()
-      await change($, r => ({
-        ...r,
-        phase: 'idle',
-        deadline: undefined,
-        lastCacheTouch: undefined,
-        contextTokens: undefined,
-        handoffAt: undefined,
-      }))
+      await apply($, prefixReplaced, 'compaction')
     }
     return result
   }).catch((_, e, next) => next(e))
@@ -136,13 +124,14 @@ export const register: Register = (on, options) => {
     if (arg === 'status') return { text: await status($, config) }
     if (arg === 'off') {
       disarm()
-      await change($, r => ({ ...r, isOff: true, phase: 'idle', deadline: undefined }))
+      await apply($, switchedOff)
       return { text: 'embers is off for this session.' }
     }
     if (arg !== '') return { text: 'Usage: /embers [status|off]' }
     const [s, now, ttl, usage] = await Promise.all([readRun($), $.clock.now(), ttlMs($, config), $.session.usage()])
-    if (s.phase === 'writing') return { text: 'embers: a handoff is being written; run /embers again when it is done.' }
-    if (s.lastCacheTouch === undefined || now - s.lastCacheTouch >= ttl) {
+    if (s.phase.kind === 'writing')
+      return { text: 'embers: a handoff is being written; run /embers again when it is done.' }
+    if (s.phase.cache === undefined || now - s.phase.cache.touchedAt >= ttl) {
       const tokens = usage.context.tokens
       const size = tokens === undefined ? 'the whole conversation' : `${k(tokens)} tokens`
       const answer = await $.ui
@@ -169,19 +158,14 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'effort' }, async ($, e, next) => {
     const result = await next(e)
     disarm()
-    await change($, r => ({
-      ...r,
-      phase: r.phase === 'armed' ? 'idle' : r.phase,
-      deadline: r.phase === 'armed' ? undefined : r.deadline,
-      lastCacheTouch: undefined,
-    }))
+    await apply($, prefixReplaced, 'effort')
     return result
   }).catch((_, e, next) => next(e))
 
   // A `/clear`, the person's or the swap's: the new conversation has nothing
   // cached, no timer, and nothing for the band. No `session.start` follows it.
   on('session.end', async ($, e, next) => {
-    if (e.reason === 'clear') await cleared($)
+    if (e.reason === 'clear') await afterClear($)
     return next(e)
   }).catch((_, e, next) => next(e))
 
@@ -190,14 +174,7 @@ export const register: Register = (on, options) => {
     const [model, now] = await Promise.all([$.session.model(), $.clock.now()])
     await $.store.set(ttlKey(model), { v: 1, observedMinutes: e.cache_ttl === '5m' ? 5 : 60, observedAt: now })
     // The new model has no cache entry: nothing to judge or keep warm.
-    await change($, r => ({
-      ...r,
-      phase: 'idle',
-      deadline: undefined,
-      lastCacheTouch: undefined,
-      handoffAt: undefined,
-      lapse: undefined,
-    }))
+    await apply($, prefixReplaced, 'model')
     return next(e)
   }).catch((_, e, next) => next(e))
 

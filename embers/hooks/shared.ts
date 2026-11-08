@@ -1,6 +1,7 @@
 import type { ModelUsage, PluginOptions, PromptSubmitInput, SessionContextBreakdown, SessionMessage } from 'claude-code'
 
 import type { EmbersRun, HandoffRecord } from '../types'
+import { isOff } from './state'
 
 export const MINUTE = 60_000
 /** A timer that fires this close to the TTL, or later, finds the cache lapsed. */
@@ -122,19 +123,22 @@ export const isPersonPrompt = (e: PromptSubmitInput): boolean =>
   (e.origin.kind === 'composer' || e.origin.kind === 'bridge')
 
 export function bandLine(s: EmbersRun, config: Config): string | undefined {
-  if (s.isOff || s.contextTokens === undefined || s.contextTokens < config.minContextTokens) {
-    return undefined
+  const { phase } = s
+  const tokens = phase.cache?.contextTokens
+  if (isOff(s) || tokens === undefined || tokens < config.minContextTokens) return undefined
+  switch (phase.kind) {
+    case 'idle':
+      return undefined
+    case 'armed': {
+      const lapse =
+        s.lapse !== undefined && s.lapse.isPending !== true
+          ? `  cache lapsed after ${s.lapse.afterMinutes}m  margin now ${s.lapse.marginMinutes}m`
+          : ''
+      return `embers  warm  handoff at ${clockTime(phase.deadline)}${lapse}`
+    }
+    case 'writing':
+      return 'embers  writing handoff…'
+    case 'ready':
+      return `embers  handoff ready  ${clockTime(phase.handoffAt)}, ${k(tokens)} tokens, warm until ${clockTime(phase.cache.warmUntil)}`
   }
-  const lapse =
-    s.lapse !== undefined && s.lapse.isPending !== true
-      ? `  cache lapsed after ${s.lapse.afterMinutes}m  margin now ${s.lapse.marginMinutes}m`
-      : ''
-  if (s.phase === 'armed' && s.deadline !== undefined) {
-    return `embers  warm  handoff at ${clockTime(s.deadline)}${lapse}`
-  }
-  if (s.phase === 'writing') return 'embers  writing handoff…'
-  if (s.phase === 'ready' && s.handoffAt !== undefined && s.warmUntil !== undefined) {
-    return `embers  handoff ready  ${clockTime(s.handoffAt)}, ${k(s.contextTokens)} tokens, warm until ${clockTime(s.warmUntil)}`
-  }
-  return undefined
 }

@@ -1,7 +1,6 @@
 import type { EngineInterface, ModelUsage, PromptSubmitResult } from 'claude-code'
-import { atom, read, update } from 'claude-code'
 
-import type { EmbersRun, HandoffRecord } from '../types'
+import type { HandoffRecord } from '../types'
 import { disarm, inProcess } from './process'
 import {
   currentBranch,
@@ -36,28 +35,19 @@ import {
   SLACK_MS,
   SWAP,
 } from './shared'
-
-export const INITIAL: EmbersRun = {
-  phase: 'idle',
-  isOff: false,
-  startOffered: false,
-}
-const run = atom({ plugin: 'embers', key: 'run' } as const, INITIAL, { shape: 'run-1' })
-// `/embers off` holds for the process. `$.state` survives a reload but starts
-// over after a `/clear`; this variable is the reverse. Every read and write of
-// the state goes through the two functions below, which keep them in step.
-function withOff(r: EmbersRun): EmbersRun {
-  if (r.isOff) inProcess.isOff = true
-  return inProcess.isOff && !r.isOff ? { ...r, isOff: true } : r
-}
-/** The session's state; a read while drawing subscribes the drawing. */
-export async function readRun($: EngineInterface): Promise<EmbersRun> {
-  return withOff(await read($, run))
-}
-/** `update` with one signature, so the change's literals keep their types. */
-export function change($: EngineInterface, fn: (r: EmbersRun) => EmbersRun): Promise<EmbersRun> {
-  return update($, run, r => withOff(fn(withOff(r))))
-}
+import {
+  apply,
+  cacheTouched,
+  cleared,
+  forkFailed,
+  forkSkipped,
+  forkStarted,
+  forkWritten,
+  lapseObserved,
+  offerMade,
+  prefixReplaced,
+  readRun,
+} from './state'
 
 type Written = { record: HandoffRecord; usage: ModelUsage } | { reason: string; usage?: ModelUsage }
 
@@ -87,23 +77,23 @@ export async function writeHandoff($: EngineInterface, config: Config): Promise<
   const contextTokens = usage.context.tokens
   if (contextTokens === undefined) {
     // No timer runs now: an `armed` phase would promise a handoff that never comes.
-    await change($, r => ({ ...r, phase: 'idle', deadline: undefined }))
+    await apply($, forkSkipped)
     return { reason: 'no context size yet' }
   }
   const lastAssistant = lastAssistantText(await $.session.messages())
   const branch = await currentBranch($)
-  await change($, r => ({ ...r, phase: 'writing', deadline: undefined }))
+  await apply($, forkStarted)
 
   const reply = await $.model.fork({ prompt: HANDOFF_PROMPT })
   const now = await $.clock.now()
   if (!reply.isAnswered) {
-    await change($, r => (r.phase === 'writing' ? { ...r, phase: 'idle' } : r))
+    await apply($, forkFailed)
     return reply.reason === 'nothing-to-fork' ? { reason: reply.reason } : { reason: reply.reason, usage: reply.usage }
   }
   const [sessionAfter, turnsAfter, s] = await Promise.all([$.session.id(), $.session.turns(), readRun($)])
-  if (sessionAfter !== sessionId || turnsAfter !== turns || s.phase !== 'writing') {
+  if (sessionAfter !== sessionId || turnsAfter !== turns || s.phase.kind !== 'writing') {
     // A turn or a /clear that moved on set its own phase; only a stale `writing` is ours.
-    await change($, r => (r.phase === 'writing' ? { ...r, phase: 'idle' } : r))
+    await apply($, forkFailed)
     return { reason: 'the conversation moved on while it was written', usage: reply.usage }
   }
   const record: HandoffRecord = {
@@ -120,34 +110,23 @@ export async function writeHandoff($: EngineInterface, config: Config): Promise<
   const ttl = await ttlMs($, config)
   await $.store.set(handoffKey(root, sessionId), record)
   await sweep($, now, ttl)
-  const isWarm = isWarmRead(reply.usage)
-  await change($, r => {
-    if (r.phase !== 'writing') return r
-    const touch = isWarm ? now : r.lastCacheTouch
-    return {
-      ...r,
-      phase: 'ready',
-      handoffAt: now,
-      lastCacheTouch: touch,
-      warmUntil: touch === undefined ? undefined : touch + ttl,
-    }
-  })
+  await apply($, forkWritten, { now, ttl, isWarm: isWarmRead(reply.usage), contextTokens })
   return { record, usage: reply.usage }
 }
 
 async function fire($: EngineInterface, config: Config): Promise<void> {
   const [s, now, ttl, model] = await Promise.all([readRun($), $.clock.now(), ttlMs($, config), $.session.model()])
-  if (s.phase !== 'armed') return
-  if (s.modelAtTouch !== model) {
+  if (s.phase.kind !== 'armed') return
+  const { cache } = s.phase
+  if (cache.model !== model) {
     // The prefix is billed afresh after `/model`: a fork now pays for all of it.
-    await change($, r => (r.phase === 'armed' ? { ...r, phase: 'idle', deadline: undefined } : r))
+    await apply($, forkSkipped)
     $.ui.toast('embers: handoff skipped, the model changed since the last turn')
     return
   }
-  if (s.lastCacheTouch === undefined || now - s.lastCacheTouch >= ttl - SLACK_MS) {
-    await change($, r => (r.phase === 'armed' ? { ...r, phase: 'idle', deadline: undefined } : r))
-    const idle = s.lastCacheTouch === undefined ? '' : ` after ${minutesOf(now - s.lastCacheTouch)}m idle`
-    $.ui.toast(`embers: handoff skipped, the cache had already lapsed${idle}`)
+  if (now - cache.touchedAt >= ttl - SLACK_MS) {
+    await apply($, forkSkipped)
+    $.ui.toast(`embers: handoff skipped, the cache had already lapsed after ${minutesOf(now - cache.touchedAt)}m idle`)
     return
   }
   const written = await writeHandoff($, config)
@@ -159,13 +138,9 @@ async function fire($: EngineInterface, config: Config): Promise<void> {
 }
 
 /** After a `/clear`: a new conversation with nothing cached and no timer. */
-export async function cleared($: EngineInterface): Promise<void> {
+export async function afterClear($: EngineInterface): Promise<void> {
   disarm()
-  await change($, r => ({
-    ...INITIAL,
-    isOff: r.isOff,
-    startOffered: r.startOffered,
-  }))
+  await apply($, cleared)
 }
 
 /**
@@ -178,7 +153,7 @@ export async function cleared($: EngineInterface): Promise<void> {
 async function swap($: EngineInterface, record: HandoffRecord, tokens: number, fixed: number): Promise<void> {
   const oldId = await $.session.id()
   await $.command.run({ command: 'clear' })
-  await cleared($)
+  await afterClear($)
   const appended = await $.session.append({
     message: { type: 'user', content: [{ type: 'text', text: compose(record) }] },
   })
@@ -199,15 +174,11 @@ async function swap($: EngineInterface, record: HandoffRecord, tokens: number, f
  * count, says when the cache was last read and how large the context was,
  * so the first prompt is judged and a swap is offered.
  */
-export async function seedFromHandoff($: EngineInterface): Promise<void> {
+export async function seedFromHandoff($: EngineInterface, ttl: number): Promise<void> {
   const [sessionId, root, turns] = await Promise.all([$.session.id(), $.session.root(), $.session.turns()])
   const record = await readHandoff($, handoffKey(root, sessionId))
   if (record === undefined || record.turns !== turns) return
-  await change($, r =>
-    r.lastCacheTouch !== undefined
-      ? r
-      : { ...r, lastCacheTouch: record.writtenAt, contextTokens: record.contextTokens },
-  )
+  await apply($, cacheTouched, { touchedAt: record.writtenAt, contextTokens: record.contextTokens, ttl })
 }
 
 /**
@@ -275,7 +246,7 @@ async function reshape($: EngineInterface, plan: Reshape): Promise<void> {
   try {
     if (plan.swapTo === undefined) {
       await $.command.run({ command: 'clear' })
-      await cleared($)
+      await afterClear($)
       $.ui.toast('embers: started a fresh session; send your prompt from the box')
       return
     }
@@ -283,7 +254,7 @@ async function reshape($: EngineInterface, plan: Reshape): Promise<void> {
   } finally {
     // The person has chosen: the prompt they send next is not asked about again.
     inProcess.isReshaping = false
-    await change($, r => ({ ...r, lastCacheTouch: undefined }))
+    await apply($, prefixReplaced, 'cold-choice')
   }
 }
 
@@ -313,17 +284,17 @@ export async function observeTtl(
     if (observed === undefined || observed >= ttl) return
     const lapse = { afterMinutes: observed, marginMinutes: marginFor(observed, config.marginMinutes), touch, model }
     if (held === undefined || held.touch === touch) {
-      await change($, r => ({ ...r, lapse: { ...lapse, isPending: true } }))
+      await apply($, lapseObserved, { ...lapse, isPending: true })
       return
     }
     await $.store.set(key, { v: 1, observedMinutes: observed, observedAt: now })
-    await change($, r => ({ ...r, lapse }))
+    await apply($, lapseObserved, lapse)
   } else if (isWarmRead(usage)) {
     if (override !== undefined && idleMinutes > override.observedMinutes) {
       await $.store.delete(key)
-      await change($, r => ({ ...r, lapse: undefined }))
+      await apply($, lapseObserved, undefined)
     } else if (held !== undefined && idleMinutes > held.afterMinutes) {
-      await change($, r => ({ ...r, lapse: undefined }))
+      await apply($, lapseObserved, undefined)
     }
   }
 }
@@ -331,7 +302,7 @@ export async function observeTtl(
 export async function offerHandoff($: EngineInterface, config: Config): Promise<void> {
   const s = await readRun($)
   if (s.startOffered) return
-  await change($, r => ({ ...r, startOffered: true }))
+  await apply($, offerMade)
   const [root, sessionId, branch, now, ttl] = await Promise.all([
     $.session.root(),
     $.session.id(),
@@ -379,5 +350,5 @@ export async function status($: EngineInterface, config: Config): Promise<string
       `  ${dateTime(record.writtenAt)}  ${record.branch === '' ? '(no branch)' : record.branch}  ${record.turns} turns  ${k(record.contextTokens)} tokens  ${record.sessionId === sessionId ? 'this session' : record.sessionId.slice(0, 8)}`,
   )
   const handoffs = rows.length === 0 ? 'No handoffs for this root.' : `Handoffs for ${root}:\n${rows.join('\n')}`
-  return `${ttl}. ${s.isOff ? 'Off for this session.' : `Phase: ${s.phase}.`}\n${handoffs}`
+  return `${ttl}. ${s.isOff ? 'Off for this session.' : `Phase: ${s.phase.kind}.`}\n${handoffs}`
 }
