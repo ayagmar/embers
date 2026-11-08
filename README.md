@@ -57,6 +57,6 @@ Set these in the plugin's config menu.
 
 ## Cost
 
-A handoff reads the cached conversation, and the only part it writes to the cache is the last turn, which is not cached yet. A session you abandon costs one handoff.
+A handoff reads the cached conversation and, in the runs measured, writes little to the cache: 7.6k tokens after a conversation's first turn, and none after a turn of eight file reads that added 46k tokens. A session you abandon costs one handoff.
 
 The design is in `docs/DESIGN.md`.
