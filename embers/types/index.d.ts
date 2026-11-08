@@ -6,6 +6,8 @@ export type EmbersRun = {
   phase: Phase
   /** Epoch ms of the last main-loop turn end, or of a later fork that read the cache. */
   lastCacheTouch?: number
+  /** The model at `lastCacheTouch`; another model has no cache entry to keep warm or to judge the TTL by. */
+  modelAtTouch?: string
   /** `context.tokens` read at the last main-loop turn end; absent after a compaction. */
   contextTokens?: number
   /** Epoch ms the handoff timer fires, while `armed`. */

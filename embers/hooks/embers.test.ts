@@ -1,4 +1,5 @@
 import type { HandoffRecord } from '../types'
+import type { Engine } from 'claude-code/testing'
 import type { ModelUsage, On, SessionCompactInput } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
@@ -14,9 +15,18 @@ const WARM: ModelUsage = {
   cache_read_input_tokens: 99_000,
   cache_creation_input_tokens: 0,
 }
+const COLD: ModelUsage = {
+  input_tokens: 300,
+  output_tokens: 1200,
+  cache_read_input_tokens: 0,
+  cache_creation_input_tokens: 99_000,
+}
 
 /** What the engine beneath the plugin holds, and what reached it. */
 type World = {
+  model: string
+  /** What the main loop's next request reads from the cache. */
+  stepUsage: ModelUsage
   turns: number
   contextTokens: number
   answer: string
@@ -31,6 +41,8 @@ type World = {
 /** Stands for the engine: every `$` call embers makes is answered here. */
 function engine(on: On, overrides: Partial<World> = {}): World {
   const world: World = {
+    model: 'claude-test',
+    stepUsage: WARM,
     turns: 3,
     contextTokens: 100_000,
     answer: 'Send as is',
@@ -46,7 +58,7 @@ function engine(on: On, overrides: Partial<World> = {}): World {
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.id', () => ({ value: SESSION }))
   on('session.root', () => ({ value: ROOT }))
-  on('session.model', () => ({ value: 'claude-test' }))
+  on('session.model', () => ({ value: world.model }))
   on('session.turns', () => ({ value: world.turns }))
   on('session.messages', () => ({
     value: [
@@ -116,6 +128,17 @@ function engine(on: On, overrides: Partial<World> = {}): World {
     return { isFilled: true }
   })
   on('turn.complete', (_, e) => ({ text: e.answer }))
+  // eslint-disable-next-line require-yield
+  on('turn.step', async function* (_, e) {
+    return {
+      turnId: e.turnId,
+      index: e.index,
+      answer: '',
+      toolUses: [],
+      stopReason: 'end_turn',
+      usage: { ...world.stepUsage, model: world.model },
+    } as const
+  })
   return world
 }
 
@@ -186,6 +209,12 @@ const asRun = (written: unknown): Run =>
   typeof written === 'object' && written !== null && 'value' in written && typeof written.value === 'object' && written.value !== null
     ? written.value
     : {}
+/** The main loop's first request of a turn, read to its end. */
+async function step($: Engine, model = 'claude-test'): Promise<void> {
+  const stream = $.turn.step({ turnId: 't', index: 0, model, messageCount: 4 })
+  for await (const _ of stream) void _
+}
+
 // The test environment has the web timers; the hooks typings leave them out.
 declare function setTimeout(fn: () => void, ms: number): unknown
 
@@ -307,6 +336,33 @@ test('a 5m TTL forks the handoff near its end, not one minute after every turn',
   await clock.advance(3 * MINUTE + 59_000)
   expect(world.forks).toBe(0)
   await clock.advance(1000)
+  expect(world.forks).toBe(1)
+})
+
+test('a model change while idle forks nothing and stores no TTL from the cold read that follows', async ($, on) => {
+  const world = engine(on)
+  const clock = mock.clock(on, { now: T0 })
+  memoryStore(on)
+
+  await $.session.start(start)
+  await $.turn.complete(turnEnd)
+  world.model = 'claude-other'
+  await clock.advance(55 * MINUTE)
+  expect(world.forks).toBe(0)
+  expect(world.toasts).toEqual(['embers: handoff skipped, the model changed since the last turn'])
+
+  // Sent before any timer: the first request on the new model reads cold
+  // after 10m, well inside the TTL. Taken for a lapse, it would store a 5m
+  // TTL and fork 4m after the next turn.
+  await $.turn.complete(turnEnd)
+  world.model = 'claude-test'
+  await clock.advance(10 * MINUTE)
+  world.stepUsage = COLD
+  await step($)
+  await $.turn.complete(turnEnd)
+  await clock.advance(5 * MINUTE)
+  expect(world.forks).toBe(0)
+  await clock.advance(50 * MINUTE)
   expect(world.forks).toBe(1)
 })
 

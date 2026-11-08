@@ -138,8 +138,14 @@ export async function writeHandoff($: EngineInterface, config: Config): Promise<
 }
 
 async function fire($: EngineInterface, config: Config): Promise<void> {
-  const [s, now, ttl] = await Promise.all([read($, run), $.clock.now(), ttlMs($, config)])
+  const [s, now, ttl, model] = await Promise.all([read($, run), $.clock.now(), ttlMs($, config), $.session.model()])
   if (s.phase !== 'armed') return
+  if (s.modelAtTouch !== model) {
+    // The prefix is billed afresh after `/model`: a fork now pays for all of it.
+    await change($, r => (r.phase === 'armed' ? { ...r, phase: 'idle', deadline: undefined } : r))
+    $.ui.toast('embers: handoff skipped, the model changed since the last turn')
+    return
+  }
   if (s.lastCacheTouch === undefined || now - s.lastCacheTouch >= ttl - SLACK_MS) {
     await change($, r => (r.phase === 'armed' ? { ...r, phase: 'idle', deadline: undefined } : r))
     const idle = s.lastCacheTouch === undefined ? '' : ` after ${minutesOf(now - s.lastCacheTouch)}m idle`

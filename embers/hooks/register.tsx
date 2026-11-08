@@ -59,10 +59,12 @@ export const register: Register = (on, options) => {
 
   on('turn.step', async function* ($, e, next) {
     if (e.agentId !== undefined || e.index !== 0) return yield* next(e)
-    const touch = (await readRun($)).lastCacheTouch
-    const sentAt = await $.clock.now()
+    const [s, model, sentAt] = await Promise.all([readRun($), $.session.model(), $.clock.now()])
     const result = yield* next(e)
-    if (touch !== undefined && result.usage !== null) await observeTtl($, config, sentAt - touch, result.usage)
+    // After `/model` the prefix is billed afresh: a cold read says nothing about the TTL.
+    if (s.lastCacheTouch !== undefined && s.modelAtTouch === model && result.usage !== null) {
+      await observeTtl($, config, sentAt - s.lastCacheTouch, result.usage)
+    }
     return result
   }).catch(async function* ($, e, next) {
     return yield* next(e)
@@ -71,12 +73,13 @@ export const register: Register = (on, options) => {
   on('turn.complete', async ($, e, next) => {
     if (e.agentId !== undefined) return next(e)
     disarm()
-    const [now, sessionId, root, usage, ttl] = await Promise.all([
+    const [now, sessionId, root, usage, ttl, model] = await Promise.all([
       $.clock.now(),
       $.session.id(),
       $.session.root(),
       $.session.usage(),
       ttlMs($, config),
+      $.session.model(),
     ])
     // A handoff of this session is overtaken by the turn that just ended.
     await $.store.delete(handoffKey(root, sessionId))
@@ -89,6 +92,7 @@ export const register: Register = (on, options) => {
         ...r,
         phase: isArmed ? 'armed' : 'idle',
         lastCacheTouch: now,
+        modelAtTouch: model,
         contextTokens: tokens,
         deadline: isArmed ? now + ttl - margin : undefined,
         warmUntil: now + ttl,
@@ -144,12 +148,18 @@ export const register: Register = (on, options) => {
     }
   }).catch(() => ({ text: 'embers: the command failed; the debug log has why.' }))
 
-  // A changed effort level makes the next fork rewrite the cache on models
-  // without per-message effort: no fork this idle period.
+  // A changed effort level makes the next request rewrite the cache on models
+  // without per-message effort: no fork this idle period, and the next cold
+  // read is not a TTL observation.
   on('command.run', { command: 'effort' }, async ($, e, next) => {
     const result = await next(e)
     disarm()
-    await change($, r => (r.phase === 'armed' ? { ...r, phase: 'idle', deadline: undefined } : r))
+    await change($, r => ({
+      ...r,
+      phase: r.phase === 'armed' ? 'idle' : r.phase,
+      deadline: r.phase === 'armed' ? undefined : r.deadline,
+      lastCacheTouch: undefined,
+    }))
     return result
   }).catch(($, e, next) => next(e))
 
