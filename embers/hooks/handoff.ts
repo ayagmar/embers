@@ -42,13 +42,21 @@ export const INITIAL: EmbersRun = {
   startOffered: false,
 }
 const run = atom({ plugin: 'embers', key: 'run' } as const, INITIAL, { shape: 'run-1' })
+// `/embers off` holds for the process. `$.state` survives a reload but starts
+// over after a `/clear`; this variable is the reverse. Every read and write of
+// the state goes through the two functions below, which keep them in step.
+let isOffInProcess = false
+function withOff(r: EmbersRun): EmbersRun {
+  if (r.isOff) isOffInProcess = true
+  return isOffInProcess && !r.isOff ? { ...r, isOff: true } : r
+}
 /** The session's state; a read while drawing subscribes the drawing. */
-export function readRun($: EngineInterface): Promise<EmbersRun> {
-  return read($, run)
+export async function readRun($: EngineInterface): Promise<EmbersRun> {
+  return withOff(await read($, run))
 }
 /** `update` with one signature, so the change's literals keep their types. */
 export function change($: EngineInterface, fn: (r: EmbersRun) => EmbersRun): Promise<EmbersRun> {
-  return update($, run, fn)
+  return update($, run, r => withOff(fn(withOff(r))))
 }
 
 type Written = { record: HandoffRecord; usage: ModelUsage } | { reason: string; usage?: ModelUsage }
@@ -110,7 +118,7 @@ export async function writeHandoff($: EngineInterface, config: Config): Promise<
   const [sessionAfter, turnsAfter, s] = await Promise.all([
     $.session.id(),
     $.session.turns(),
-    read($, run),
+    readRun($),
   ])
   if (sessionAfter !== sessionId || turnsAfter !== turns || s.phase !== 'writing') {
     // A turn or a /clear that moved on set its own phase; only a stale `writing` is ours.
@@ -147,7 +155,7 @@ export async function writeHandoff($: EngineInterface, config: Config): Promise<
 }
 
 async function fire($: EngineInterface, config: Config): Promise<void> {
-  const [s, now, ttl, model] = await Promise.all([read($, run), $.clock.now(), ttlMs($, config), $.session.model()])
+  const [s, now, ttl, model] = await Promise.all([readRun($), $.clock.now(), ttlMs($, config), $.session.model()])
   if (s.phase !== 'armed') return
   if (s.modelAtTouch !== model) {
     // The prefix is billed afresh after `/model`: a fork now pays for all of it.
@@ -318,7 +326,7 @@ export async function observeTtl(
 ): Promise<void> {
   const total = usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens
   if (total === 0) return
-  const [model, now, s] = await Promise.all([$.session.model(), $.clock.now(), read($, run)])
+  const [model, now, s] = await Promise.all([$.session.model(), $.clock.now(), readRun($)])
   const key = ttlKey(model)
   const override = await readTtl($, key)
   const ttl = override?.observedMinutes ?? config.ttlMinutes
@@ -345,7 +353,7 @@ export async function observeTtl(
 }
 
 export async function offerHandoff($: EngineInterface, config: Config): Promise<void> {
-  const s = await read($, run)
+  const s = await readRun($)
   if (s.startOffered) return
   await change($, r => ({ ...r, startOffered: true }))
   const [root, sessionId, branch, now, ttl] = await Promise.all([
@@ -384,7 +392,7 @@ export async function status($: EngineInterface, config: Config): Promise<string
     $.session.root(),
     $.session.id(),
     $.session.model(),
-    read($, run),
+    readRun($),
   ])
   const override = await readTtl($, ttlKey(model))
   const ttl = override

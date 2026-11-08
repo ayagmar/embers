@@ -201,6 +201,26 @@ function manualClock(on: On, start: number): { now: number; waits: Wait[] } {
   return clock
 }
 
+/**
+ * Lets the test start `$.state` over, as the host does under a new session id
+ * after a `/clear` (no `session.start` follows) or in a later process. The
+ * next read finds nothing; the next write stands.
+ */
+function stateStartsOver(on: On): () => void {
+  let isOver = false
+  on('state.get', async (_, e, next) => {
+    const read = await next(e)
+    return isOver && 'value' in read && read.value !== undefined ? { value: { ...read.value, value: undefined } } : read
+  })
+  on('state.set', (_, e, next) => {
+    isOver = false
+    return next(e)
+  })
+  return () => {
+    isOver = true
+  }
+}
+
 /** `HH:MM` in local time, as the band writes it. */
 const hhmm = (ms: number): string => new Date(ms).toTimeString().slice(0, 5)
 
@@ -326,23 +346,13 @@ test('a /clear typed by the person drops the old band and timer, and the next tu
   const world = engine(on)
   const clock = mock.clock(on, { now: T0 })
   memoryStore(on)
-  // The host starts `$.state` over under the new session id, with no
-  // `session.start` after it.
-  let isNewSession = false
-  on('state.get', async (_, e, next) => {
-    const read = await next(e)
-    return isNewSession && 'value' in read && read.value !== undefined ? { value: { ...read.value, value: undefined } } : read
-  })
-  on('state.set', (_, e, next) => {
-    isNewSession = false
-    return next(e)
-  })
+  const startOver = stateStartsOver(on)
 
   await $.session.start(start)
   await $.turn.complete(turnEnd)
   expect(await band($)).toContain('embers  warm  handoff at')
   await $.session.end({ reason: 'clear', sessionId: SESSION, resume: { id: SESSION } })
-  isNewSession = true
+  startOver()
 
   expect(await band($)).toBe('')
   await clock.advance(55 * MINUTE)
@@ -353,20 +363,30 @@ test('a /clear typed by the person drops the old band and timer, and the next tu
   expect(await band($)).toBe(`embers  warm  handoff at ${hhmm(T0 + 110 * MINUTE)}`)
 })
 
+test('/embers off holds after a /clear, which starts the state over', async ($, on) => {
+  const world = engine(on)
+  const clock = mock.clock(on, { now: T0 })
+  memoryStore(on)
+  const startOver = stateStartsOver(on)
+  const off = { command: 'embers', args: 'off', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 120 } } as const
+
+  await $.session.start(start)
+  await $.command.run(off)
+  await $.session.end({ reason: 'clear', sessionId: SESSION, resume: { id: SESSION } })
+  startOver()
+  await $.turn.complete(turnEnd)
+
+  expect(await band($)).toBe('')
+  await clock.advance(55 * MINUTE)
+  expect(world.forks).toBe(0)
+})
+
 test('the start offer shows only at a fresh interactive start, and not again after Skip', async ($, on) => {
   const world = engine(on, { answer: 'Skip', turns: 0 })
   const clock = mock.clock(on, { now: T0 })
   memoryStore(on, { [`handoff:${ROOT}:old`]: handoff({ sessionId: 'old', writtenAt: T0 - 120 * MINUTE }) })
   // A later process starts with no `$.state` of its own.
-  let isNewProcess = false
-  on('state.get', async (_, e, next) => {
-    const read = await next(e)
-    return isNewProcess && 'value' in read && read.value !== undefined ? { value: { ...read.value, value: undefined } } : read
-  })
-  on('state.set', (_, e, next) => {
-    isNewProcess = false
-    return next(e)
-  })
+  const startOver = stateStartsOver(on)
 
   await $.session.start({ ...start, isInteractive: false })
   await clock.settle()
@@ -380,7 +400,7 @@ test('the start offer shows only at a fresh interactive start, and not again aft
   await clock.settle()
   expect(world.asks.map(ask => ask.labels)).toEqual([['Load it', 'Skip']])
 
-  isNewProcess = true
+  startOver()
   await $.session.start(start)
   await clock.settle()
   expect(world.asks).toHaveLength(1)
