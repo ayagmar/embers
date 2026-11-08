@@ -5,16 +5,15 @@ import {
   change,
   cleared,
   coldPrompt,
-  disarm,
   observeTtl,
   offerHandoff,
   readRun,
-  reshaping,
   seedFromHandoff,
   status,
   ttlMs,
   writeHandoff,
 } from './handoff'
+import { disarm, inProcess } from './process'
 import { handoffKey, marginFor, sweep, ttlKey } from './records'
 import { bandLine, CANCEL, forkFigures, isPersonPrompt, k, MINUTE, readConfig, WRITE } from './shared'
 
@@ -48,7 +47,7 @@ export const register: Register = (on, options) => {
   on('prompt.submit', async ($, e, next) => {
     if (!isPersonPrompt(e)) return next(e)
     // Asked again, it would start a second cold fork or send cold under the swap.
-    if (reshaping()) return { drop: 'embers: still swapping; send again when it says done' }
+    if (inProcess.isReshaping) return { drop: 'embers: still swapping; send again when it says done' }
     disarm()
     const s = await change($, r => ({ ...r, phase: 'idle', deadline: undefined }))
     if (s.isOff || config.coldMode === 'off' || config.coldMode === 'send' || s.lastCacheTouch === undefined) {
