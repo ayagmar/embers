@@ -29,5 +29,4 @@ Updated 2026-11-08.
 - Fork cache writes: about 7.6k after a conversation's first turn, 0 to 3 after later turns (one eight-read turn measured, `briefs/09-status.md`). The earlier theory that the fork rewrites the last turn did not hold. The first-turn write is unexplained.
 - `/embers off` comes back on after a `/clear` followed by a reload before any state write. The kit cannot start a module over, so there is no test.
 - Whether the org plugin bypass of `classic.*` hooks also applies to `classic.PostModelSwitch` (assumed yes; the mod no longer depends on it).
-- The clone command in the README fails for others while the repository is private.
 - Publishing: not planned until the mod has run for a few days with default settings.
