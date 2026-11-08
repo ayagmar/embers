@@ -1,8 +1,10 @@
 # embers: design
 
+Revision 2, after the challenge in `briefs/01-challenge-report.md`. Line references `d.ts:<n>` point into `reference/claude-code.d.ts`.
+
 ## Problem
 
-Claude Code sends the whole conversation on every request. The API serves the unchanged prefix from a prompt cache at a tenth of the input price, but the cache entry lapses after an idle period (the TTL: one hour on this account, five minutes under overage or on other plans). The first request after a lapse writes the whole prefix again at 1.25 times the input price. On a 100k-token session that is the single most expensive request of the day, and it buys nothing: the next request is warm again.
+Claude Code sends the whole conversation on every request. The API serves the unchanged prefix from a prompt cache at a tenth of the input price, but the entry lapses after an idle period (the TTL: one hour on this account, five minutes under overage or on other plans). The first request after a lapse writes the whole prefix again at 1.25 times the input price. On a 100k-token session that is the most expensive request of the day, and it buys nothing: the next request is warm again.
 
 Two things make it worse:
 
@@ -11,60 +13,87 @@ Two things make it worse:
 
 ## What embers does
 
-1. **Warm handoff.** When a turn ends on a session whose context is above a size threshold, embers arms one timer for TTL minus a margin. If the session is still idle when it fires, embers asks the model for a handoff with `$.model.fork`. A fork rides the main thread's cached prefix, so it costs the handoff's output tokens plus a few hundred input tokens. The handoff is stored in `$.store` under project root and session id, with the time and the context size. The timer does not re-arm until the next turn ends.
+1. **Warm handoff.** When a main-loop turn ends on a session whose context is above a size threshold, embers arms one timer for TTL minus a margin. If the session is still idle when it fires, embers asks the model for a handoff with `$.model.fork`. A fork rides the main thread's cached prefix, so it costs the handoff's output tokens plus a few hundred input tokens. A cache read also renews the entry, so the fork keeps the prefix warm for one more TTL. The handoff is stored in `$.store`, bound to the session id and turn count it was written from.
 
-2. **Cold swap.** On `prompt.submit`, embers compares the time since the last turn with the TTL.
-   - Under the TTL: the prompt passes through, nothing drawn, nothing logged.
-   - Over the TTL with a handoff on file: embers compacts the conversation to the handoff (its own `session.compact` hook answers with the stored messages, so no model call) and lets the prompt enter on the short prefix.
-   - Over the TTL without a handoff: embers holds the prompt and offers three choices in the band: send anyway (cold reload once), handoff then swap (one cold fork, then compact), or fresh (`/clear`, then the prompt enters first). The typed text is never lost.
+2. **Cold prompt.** On a person's `prompt.submit` on the main loop, embers compares the time since the last cache touch (the last main-loop turn end, or a later fork that read the cache) with the TTL.
+   - Under the TTL: the prompt passes through. Nothing drawn, nothing logged.
+   - Over the TTL: embers asks, inside the hook with `$.ui.ask`, and then calls `next(e)` with the prompt intact. The choices:
+     - **swap** (first, when a handoff is on file and matches the session id and turn count): compact to the handoff, then let the prompt enter on the short prefix.
+     - **handoff and swap** (when no matching handoff is on file): one cold fork writes the handoff, then compact, then the prompt enters.
+     - **send**: the prompt enters cold, the cache rewarms on that request.
+     - **fresh**: `/clear`, then the prompt enters first. The hook drops the prompt, fills it back into the prompt box, and runs `/clear` from `$.clock.after(0, …)` because `$.command.run` rejects inside a hook the turn waits on (`d.ts:3236`). Attachments must be pasted again; the ask says so.
+   - `coldMode` `swap` skips the ask when a matching handoff is on file. `send` and `off` never ask. If the ask rejects (dismissed, non-interactive), the prompt is sent.
+   - The swap is skipped, and the prompt sent, when the saving is small: context tokens minus (system and tools tokens plus handoff tokens) below `minSavingTokens`. The system and tools figure comes from `$.session.usage({ breakdown: "summary" })`.
 
-3. **Handoff on start.** When a session starts in a project where a previous session left a handoff, embers offers to load it. This turns the handoff written for a session you abandoned into the project's status note.
+3. **Handoff on start.** When an interactive session starts (`source` startup, not reload) in a project where a previous session left a handoff older than the TTL, embers offers it once per session. Loading appends it as a user message with `$.session.append`. The offer shows the handoff's time and branch.
 
-4. **Self-correction.** Every fork result carries `usage.cache_read_input_tokens`. Near zero after an idle shorter than the configured TTL means the real TTL is shorter. embers records the observed TTL per model in `$.store`, shortens its margin to fit, and shows the observation in the band.
+4. **TTL observation.** embers reads the TTL from the engine where it says it (`cache_ttl` on the classic model-switch hooks, `d.ts:8239`) and otherwise observes it from the main loop's first response after an idle: a near-zero `cache_read_input_tokens` after an idle shorter than the configured TTL, on the same model, means the real TTL is shorter. The observed TTL is stored per model and overrides the configured one. An override clears only on a warm read after an idle longer than the override. Fork results are not used for this: a cold fork can also follow `/model` or a late timer.
 
 ## Rules that keep it cheap
 
-- One fork per idle period, never more. An abandoned session costs one handoff.
-- Nothing happens below the context threshold. A cold reload of a small context is cheaper than any of this.
-- The fork names no `effort`. On a model without per-message effort, a named effort rewrites the whole conversation into a new cache entry. The handoff prompt asks for haste in words instead.
-- The fork's prompt is short and fixed, so the uncached tail is a few hundred tokens.
-- No timer is armed in a `-p` run, under an SDK host, or when the band cannot be drawn and mode is `ask`.
+- One fork per idle period. The timer does not re-arm until the next main-loop turn ends. An abandoned session costs one handoff.
+- Nothing happens below `minContextTokens`. The size is `(await $.session.usage()).context.tokens` read in the main-loop `turn.complete`; absent (right after a compaction) counts as below threshold. `e.usage` on `turn.complete` sums every response of the turn and is the wrong figure.
+- The fork names no `effort`. On a model without per-message effort, a named effort rewrites the whole conversation into a new cache entry. The handoff prompt says there are no tools and asks for a direct answer without deliberation, so the uncached tail is a few hundred tokens.
+- The fork is skipped when the effort level changed while idle, when a turn is running, when the session is not interactive, and when the wall clock says the cache has already lapsed (a laptop that slept through the deadline). A skipped fork writes nothing.
+- `/embers` on a cold cache says so and asks before forking.
+- Every fork and swap toasts its `cache_read_input_tokens`, `output_tokens` and, for a swap, the tokens before and after, so the cost is visible.
+
+## Scope filters
+
+- Act on the main loop only: every hook returns `next(e)` first when `e.agentId !== undefined`.
+- At `prompt.submit`, act only when `!e.command`, `!e.turnId`, `!e.isMeta`, and `e.origin` is absent or its kind is `composer` or `bridge`. Slash commands, queued prompts, task notifications, `/loop`, peers and plugins pass through untouched.
+- The `session.compact` hook answers only when `trigger === 'plugin'`, `agentId === undefined`, and `instructions` is the marker `embers:<handoffId>`. Every other compaction, including `/compact` and auto-compaction, gets `next(e)`.
+
+## State
+
+`$.state` (session, JSON only, survives hot reload):
+
+- `phase`: `idle` | `armed` | `writing` | `ready`
+- `lastCacheTouch`: epoch ms of the last main-loop turn end or warm fork
+- `contextTokens`: from the last main-loop `turn.complete`, or absent
+- `deadline`: epoch ms the timer should fire, while `armed`
+- `effortAtTouch`: the effort level at the last turn end
+- `startOffered`: whether the start offer was shown this session
+
+The timer handle lives in a module variable. `session.start` (which fires on reload too) re-arms from `deadline` when `phase` is `armed` and the deadline is still ahead. The timer is cancelled at main-loop `prompt.submit` and `turn.start`. When it fires, it re-reads `$.state` and the clock before forking.
+
+`$.store` (across sessions), one key per record, no index:
+
+- `handoff:<root>:<sessionId>`: `{ v: 1, root, branch, sessionId, turns, writtenAt, contextTokens, text, lastAssistant }`. `lastAssistant` is the last assistant message's text, taken from `$.session.messages()` before the fork, because the fork's view ends at the last request and never sees the final reply. The compaction includes it after the handoff.
+- `ttl:<model>`: `{ v: 1, observedMinutes, observedAt }`.
+
+Retention: a handoff is deleted when swapped to, loaded, or overtaken by a later main-loop turn of its own session. At most the newest handoff per root and branch is kept, and records older than 14 days are dropped on session start. Every read validates `v` and shape; a record that fails is treated as absent and deleted.
+
+Session id, root and turns are captured before every await and bound to the record; `/clear` mid-fork must not store the old conversation under the new id.
+
+Resume: `classic.SessionStart` with `source: 'resume'` carries `seconds_since_last_response` and `context_tokens` (`d.ts:12610-12629`); embers seeds `lastCacheTouch` and `contextTokens` from them so the first prompt after a resume is judged correctly.
 
 ## Configuration (`userConfig`)
 
 | key | type | default | meaning |
 |---|---|---|---|
-| `ttlMinutes` | number | 60 | assumed cache lifetime |
+| `ttlMinutes` | number | 60 | assumed cache lifetime; overridden by an engine-reported or observed TTL |
 | `marginMinutes` | number | 5 | how long before the TTL the handoff is written |
 | `minContextTokens` | number | 40000 | below this, embers does nothing |
-| `coldMode` | `ask` / `swap` / `send` / `off` | `ask` | what to do on a cold prompt with no handoff on file; with a handoff on file, `ask` and `swap` both swap |
-| `offerOnStart` | boolean | true | offer the last handoff of this project on session start |
+| `minSavingTokens` | number | 20000 | a swap must shrink the prefix by at least this |
+| `coldMode` | `ask` / `swap` / `send` / `off` | `ask` | see "Cold prompt" |
+| `offerOnStart` | boolean | true | offer the last handoff of this root and branch on session start |
 | `showBand` | boolean | true | draw the band above the prompt |
 
-An observed TTL shorter than `ttlMinutes` overrides it for that model until a warm fork is observed again.
+A `userConfig` change reloads the mod; the state above survives it.
 
 ## UI
 
-- **Band** above the prompt, drawn only when the context is above threshold:
-  - warm: `embers  warm  handoff in 48m`
-  - written: `embers  handoff ready  written 12:04, 118k tokens`
-  - cold with a choice: `embers  cold  [send anyway] [handoff and swap] [fresh]`
-  - observed TTL: `embers  cache lapsed after 5m, margin now 4m`
-- **Toast** once per handoff or swap, with tokens read from cache and tokens written.
-- **Commands**: `/embers` writes a handoff now; `/embers status` shows the store for this project; `/embers off` disables for this session.
-- **Status line**: nothing. The band is enough.
+- **Band** above the prompt, drawn only when the context is above threshold and `showBand` is on, redrawn on state changes only (absolute times, no countdown):
+  - armed: `embers  warm  handoff at 12:55`
+  - writing: `embers  writing handoff…`
+  - ready: `embers  handoff ready  12:55, 118k tokens, warm until 13:55`
+  - ttl observed: `embers  cache lapsed after 5m  margin now 4m`
+- **Ask** (`$.ui.ask`) on a cold prompt, with the options above and one line of cost: the context size, what sending cold costs, what the swap costs.
+- **Toast** once per handoff, swap or skipped fork, with the token figures.
+- **Commands**: `/embers` writes a handoff now (asks first if the cache is cold); `/embers status` lists this root's handoffs and the observed TTL; `/embers off` disables for this session.
+- **Status line**: nothing.
 
-## State
+## Not in scope
 
-- `$.state` (session): phase (`idle`, `armed`, `writing`, `ready`, `cold-asking`), the armed timer's cancel, the last turn's end time and context size, the held prompt during `ask`.
-- `$.store` (across sessions): handoffs by project root and session id; observed TTL by model.
-- Every value is declared in `types/index.d.ts`; a missing or old-shaped stored value is treated as absent, never patched in place.
-
-## Open questions for the challenger
-
-1. Can `$.session.compact` be called from inside a `prompt.submit` hook, or must the hook drop the prompt, compact, then `$.prompt.submit` the held text?
-2. Is a fork at the timer served from cache on Fable when effort rides the message? What do the fork's usage numbers show on the first real run?
-3. How does the mod know the context size at `turn.complete`? `e.usage` gives the last request's input plus cache reads; is that the right figure, or should it read `$.session.measure`?
-4. What happens to an armed timer across a hot reload of the mod? Module variables reset, `$.state` stays; the timer's cancel handle is not serializable.
-5. After a swap, the first request writes a new short prefix. Is there any case where the swap costs more than sending cold? (A session you were about to end anyway.)
-6. Should `offerOnStart` key on project root alone, or on root plus branch?
+Keeping the cache alive beyond the one touch the handoff fork makes. Subagent sessions. Non-interactive runs beyond doing nothing in them.
