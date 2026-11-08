@@ -26,11 +26,12 @@ export const register: Register = (on, options) => {
       argumentHint: '[status|off]',
     })
     const now = await $.clock.now()
-    // Fires on reload too: the state survived, the timer did not.
+    // Fires on reload too: the state survived, the timer and any swap in flight did not.
     const s = await change($, r => ({
       ...r,
       isInteractive: e.isInteractive,
       phase: r.phase === 'writing' ? 'idle' : r.phase,
+      reshaping: undefined,
     }))
     if (s.phase === 'armed' && s.deadline !== undefined) arm($, config, now, s.deadline)
     await sweep($, now)
@@ -39,6 +40,8 @@ export const register: Register = (on, options) => {
 
   on('prompt.submit', async ($, e, next) => {
     if (!isPersonPrompt(e)) return next(e)
+    // Asked again, it would start a second cold fork or send cold under the swap.
+    if ((await readRun($)).reshaping === true) return { drop: 'embers: still swapping; send again when it says done' }
     disarm()
     const s = await change($, r => ({ ...r, phase: 'idle', deadline: undefined }))
     if (s.isOff || config.coldMode === 'off' || config.coldMode === 'send' || s.lastCacheTouch === undefined) {

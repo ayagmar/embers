@@ -167,6 +167,7 @@ export async function cleared($: EngineInterface): Promise<void> {
     isInteractive: r.isInteractive,
     isOff: r.isOff,
     startOffered: r.startOffered,
+    reshaping: r.reshaping,
   }))
 }
 
@@ -240,6 +241,7 @@ export async function coldPrompt(
   // hook holds, so the prompt is dropped (the engine puts it back in the box)
   // and the session is reshaped from a timer for the person to send it again.
   const plan = { swapTo: choice === SWAP ? matching : undefined, tokens, fixed }
+  await change($, r => ({ ...r, reshaping: true }))
   $.clock.after(0, () => {
     void reshape($, plan).catch(error =>
       $.ui.log(`embers: ${choice} failed: ${String(error)}`, { to: 'debug' }),
@@ -258,12 +260,13 @@ async function reshape($: EngineInterface, plan: Reshape): Promise<void> {
     if (plan.swapTo === undefined) {
       await $.command.run({ command: 'clear' })
       await cleared($)
+      $.ui.toast('embers: started a fresh session; send your prompt from the box')
       return
     }
     await swap($, plan.swapTo, plan.tokens, plan.fixed)
   } finally {
     // The person has chosen: the prompt they send next is not asked about again.
-    await change($, r => ({ ...r, lastCacheTouch: undefined }))
+    await change($, r => ({ ...r, lastCacheTouch: undefined, reshaping: undefined }))
   }
 }
 

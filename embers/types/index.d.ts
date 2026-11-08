@@ -22,6 +22,8 @@ export type EmbersRun = {
   isOff: boolean
   /** Whether the start offer was shown this session. */
   startOffered: boolean
+  /** A swap or fresh start chosen at a cold prompt is running; prompts are refused until it ends. */
+  reshaping?: boolean
   /** The observed TTL override and the margin it leaves, for the band. */
   lapse?: { afterMinutes: number; marginMinutes: number }
 }

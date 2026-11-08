@@ -255,6 +255,27 @@ test('a cold prompt with a matching handoff swaps to it without a model call', a
   expect(world.asks).toHaveLength(1)
 })
 
+test('a prompt sent again while the swap runs is refused, not asked about or sent cold', async ($, on) => {
+  const world = engine(on, { answer: 'Swap to handoff' })
+  const clock = mock.clock(on, { now: T0 })
+  memoryStore(on)
+
+  await $.session.start(start)
+  await $.turn.complete(turnEnd)
+  await clock.advance(55 * MINUTE)
+  await clock.set(T0 + 120 * MINUTE)
+  await $.prompt.submit({ text: 'go on', ...typed })
+  // The swap is scheduled, not done: Enter again from the box.
+  const again = await $.prompt.submit({ text: 'go on', ...typed })
+  expect(again).toEqual({ drop: 'embers: still swapping; send again when it says done' })
+  await clock.settle()
+
+  expect(world.asks).toHaveLength(1)
+  expect(world.commands).toEqual(['clear'])
+  expect(world.forks).toBe(1)
+  expect(await $.prompt.submit({ text: 'go on', ...typed })).toEqual({ text: 'go on' })
+})
+
 test('a handoff whose turn count no longer matches is not swapped to', async ($, on) => {
   const world = engine(on, { turns: 5 })
   const clock = mock.clock(on, { now: T0 })
