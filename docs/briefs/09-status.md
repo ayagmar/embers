@@ -44,4 +44,6 @@ Its reason for Biome's exhaustive-switch rule staying quiet is wrong. The review
 
 `npm run check` is clean: Biome, `tsc`, 24 tests, and `claude plugin validate` (passes with its existing `author` and icon warnings).
 
+TypeScript 7.0.2 is now a pinned dev dependency, the `typecheck` script is plain `tsc -p embers`, and `npm ci && npm run check` is clean.
+
 The scratch session, pane, settings file, debug log and the run's store file are removed.
