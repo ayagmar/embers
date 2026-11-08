@@ -24,8 +24,13 @@ export type EmbersRun = {
   startOffered: boolean
   /** A swap or fresh start chosen at a cold prompt is running; prompts are refused until it ends. */
   reshaping?: boolean
-  /** The observed TTL override and the margin it leaves, for the band. */
-  lapse?: { afterMinutes: number; marginMinutes: number }
+  /**
+   * A cold read inside the TTL and the margin it would leave. The first is
+   * held `isPending`, from the idle period that began at `touch` on `model`; a
+   * second on that model, in a later idle period, stores the `ttl:<model>`
+   * override and drops `isPending`. The band shows only a stored one.
+   */
+  lapse?: { afterMinutes: number; marginMinutes: number; touch?: number; model?: string; isPending?: boolean }
 }
 
 /** `$.store` key `handoff:<root>:<sessionId>`. */

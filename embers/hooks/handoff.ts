@@ -294,23 +294,44 @@ async function reshape($: EngineInterface, plan: Reshape): Promise<void> {
   }
 }
 
-export async function observeTtl($: EngineInterface, config: Config, idleMs: number, usage: ModelUsage): Promise<void> {
+/**
+ * Reads the main loop's first response after an idle. A cold read inside the
+ * TTL can also follow a reload, an MCP reconnect or a changed system prompt,
+ * so the first is only held; a second in a later idle period stores the
+ * shorter TTL. A warm read past a TTL clears it.
+ */
+export async function observeTtl(
+  $: EngineInterface,
+  config: Config,
+  touch: number,
+  idleMs: number,
+  usage: ModelUsage,
+): Promise<void> {
   const total = usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens
   if (total === 0) return
-  const [model, now] = await Promise.all([$.session.model(), $.clock.now()])
+  const [model, now, s] = await Promise.all([$.session.model(), $.clock.now(), read($, run)])
   const key = ttlKey(model)
   const override = await readTtl($, key)
   const ttl = override?.observedMinutes ?? config.ttlMinutes
   const idleMinutes = idleMs / MINUTE
+  const held = s.lapse?.isPending === true && s.lapse.model === model ? s.lapse : undefined
   if (usage.cache_read_input_tokens < 0.1 * total && idleMinutes < ttl) {
     const observed = KNOWN_TTLS.filter(minutes => minutes <= idleMinutes).at(-1)
     if (observed === undefined || observed >= ttl) return
+    const lapse = { afterMinutes: observed, marginMinutes: marginFor(observed, config.marginMinutes), touch, model }
+    if (held === undefined || held.touch === touch) {
+      await change($, r => ({ ...r, lapse: { ...lapse, isPending: true } }))
+      return
+    }
     await $.store.set(key, { v: 1, observedMinutes: observed, observedAt: now })
-    const lapse = { afterMinutes: observed, marginMinutes: marginFor(observed, config.marginMinutes) }
     await change($, r => ({ ...r, lapse }))
-  } else if (isWarmRead(usage) && override !== undefined && idleMinutes > override.observedMinutes) {
-    await $.store.delete(key)
-    await change($, r => ({ ...r, lapse: undefined }))
+  } else if (isWarmRead(usage)) {
+    if (override !== undefined && idleMinutes > override.observedMinutes) {
+      await $.store.delete(key)
+      await change($, r => ({ ...r, lapse: undefined }))
+    } else if (held !== undefined && idleMinutes > held.afterMinutes) {
+      await change($, r => ({ ...r, lapse: undefined }))
+    }
   }
 }
 

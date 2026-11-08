@@ -131,9 +131,10 @@ export function bandLine(s: EmbersRun, config: Config): string | undefined {
   if (s.isOff || s.contextTokens === undefined || s.contextTokens < config.minContextTokens) {
     return undefined
   }
-  const lapse = s.lapse
-    ? `  cache lapsed after ${s.lapse.afterMinutes}m  margin now ${s.lapse.marginMinutes}m`
-    : ''
+  const lapse =
+    s.lapse !== undefined && s.lapse.isPending !== true
+      ? `  cache lapsed after ${s.lapse.afterMinutes}m  margin now ${s.lapse.marginMinutes}m`
+      : ''
   if (s.phase === 'armed' && s.deadline !== undefined) {
     return `embers  warm  handoff at ${clockTime(s.deadline)}${lapse}`
   }

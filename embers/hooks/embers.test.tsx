@@ -467,18 +467,54 @@ test('a model change while idle forks nothing and stores no TTL from the cold re
   expect(world.toasts).toEqual(['embers: handoff skipped, the model changed since the last turn'])
 
   // Sent before any timer: the first request on the new model reads cold
-  // after 10m, well inside the TTL. Taken for a lapse, it would store a 5m
-  // TTL and fork 4m after the next turn.
+  // after 10m, well inside the TTL. Taken for a lapse, it would make one
+  // more cold read enough to store a 5m TTL and fork 4m after every turn.
+  world.stepUsage = COLD
   await $.turn.complete(turnEnd)
   world.model = 'claude-test'
   await clock.advance(10 * MINUTE)
-  world.stepUsage = COLD
+  await step($)
+  await $.turn.complete(turnEnd)
+  await clock.advance(10 * MINUTE)
   await step($)
   await $.turn.complete(turnEnd)
   await clock.advance(5 * MINUTE)
   expect(world.forks).toBe(0)
   await clock.advance(50 * MINUTE)
   expect(world.forks).toBe(1)
+})
+
+test('a shorter TTL is stored after cold reads in two idle periods, and cleared by a warm read past it', async ($, on) => {
+  const world = engine(on)
+  const clock = mock.clock(on, { now: T0 })
+  memoryStore(on)
+  world.stepUsage = COLD
+
+  await $.session.start(start)
+  await $.turn.complete(turnEnd)
+  await clock.advance(10 * MINUTE)
+  await step($)
+  await $.turn.complete(turnEnd)
+  // One cold read (a reload, an MCP reconnect) changes nothing yet.
+  expect(await band($)).not.toContain('cache lapsed')
+  await clock.advance(10 * MINUTE)
+  expect(world.forks).toBe(0)
+  await step($)
+  await $.turn.complete(turnEnd)
+  expect(await band($)).toContain('cache lapsed after 5m  margin now 1m')
+  await clock.advance(4 * MINUTE)
+  expect(world.forks).toBe(1)
+
+  // Warm after 10m idle: the 5m TTL was wrong, the configured 60m is back.
+  world.stepUsage = WARM
+  await clock.advance(10 * MINUTE)
+  await step($)
+  await $.turn.complete(turnEnd)
+  expect(await band($)).not.toContain('cache lapsed')
+  await clock.advance(54 * MINUTE)
+  expect(world.forks).toBe(1)
+  await clock.advance(MINUTE)
+  expect(world.forks).toBe(2)
 })
 
 test('a userConfig reload while armed keeps the deadline and arms one timer', { options: { marginMinutes: 10 } }, async ($, on) => {

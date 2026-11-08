@@ -75,7 +75,7 @@ export const register: Register = (on, options) => {
     const result = yield* next(e)
     // After `/model` the prefix is billed afresh: a cold read says nothing about the TTL.
     if (s.lastCacheTouch !== undefined && s.modelAtTouch === model && result.usage !== null) {
-      await observeTtl($, config, sentAt - s.lastCacheTouch, result.usage)
+      await observeTtl($, config, s.lastCacheTouch, sentAt - s.lastCacheTouch, result.usage)
     }
     return result
   }).catch(async function* ($, e, next) {
