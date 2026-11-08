@@ -1,7 +1,7 @@
-import type { HandoffRecord } from '../types'
-import type { Engine } from 'claude-code/testing'
 import type { ModelUsage, On, SessionCompactInput } from 'claude-code'
+import type { Engine } from 'claude-code/testing'
 import { expect, mock, test } from 'claude-code/testing'
+import type { HandoffRecord } from '../types'
 
 const ROOT = '/work/repo'
 const SESSION = 'session-1'
@@ -151,7 +151,7 @@ function engine(on: On, overrides: Partial<World> = {}): World {
     const { Text } = $.ui.resolve(e)
     return <Text>engine</Text>
   })
-  // eslint-disable-next-line require-yield
+  // biome-ignore lint/correctness/useYield: a stream that answers with no parts
   on('turn.step', async function* (_, e) {
     return {
       turnId: e.turnId,

@@ -16,7 +16,7 @@ import {
   writeHandoff,
 } from './handoff'
 import { handoffKey, marginFor, sweep, ttlKey } from './records'
-import { MINUTE, WRITE, CANCEL, bandLine, forkFigures, isPersonPrompt, k, readConfig } from './shared'
+import { bandLine, CANCEL, forkFigures, isPersonPrompt, k, MINUTE, readConfig, WRITE } from './shared'
 
 export const register: Register = (on, options) => {
   const config = readConfig(options)
@@ -43,7 +43,7 @@ export const register: Register = (on, options) => {
       })
     }
     return next(e)
-  }).catch(($, e, next) => next(e))
+  }).catch((_, e, next) => next(e))
 
   on('prompt.submit', async ($, e, next) => {
     if (!isPersonPrompt(e)) return next(e)
@@ -58,14 +58,14 @@ export const register: Register = (on, options) => {
     const idle = now - s.lastCacheTouch
     if (idle < ttl) return next(e)
     return (await coldPrompt($, config, idle, s.contextTokens)) ?? next(e)
-  }).catch(($, e, next) => next(e))
+  }).catch((_, e, next) => next(e))
 
   on('turn.start', async ($, e, next) => {
     if (e.agentId !== undefined) return next(e)
     disarm()
     await change($, r => ({ ...r, phase: 'idle', deadline: undefined }))
     return next(e)
-  }).catch(($, e, next) => next(e))
+  }).catch((_, e, next) => next(e))
 
   on('turn.step', async function* ($, e, next) {
     if (e.agentId !== undefined || e.index !== 0) return yield* next(e)
@@ -76,7 +76,7 @@ export const register: Register = (on, options) => {
       await observeTtl($, config, s.lastCacheTouch, sentAt - s.lastCacheTouch, result.usage)
     }
     return result
-  }).catch(async function* ($, e, next) {
+  }).catch(async function* (_, e, next) {
     return yield* next(e)
   })
 
@@ -113,7 +113,7 @@ export const register: Register = (on, options) => {
     })
     if (s.phase === 'armed' && s.deadline !== undefined) arm($, config, now, s.deadline)
     return next(e)
-  }).catch(($, e, next) => next(e))
+  }).catch((_, e, next) => next(e))
 
   on('session.compact', async ($, e, next) => {
     const result = await next(e)
@@ -130,7 +130,7 @@ export const register: Register = (on, options) => {
       }))
     }
     return result
-  }).catch(($, e, next) => next(e))
+  }).catch((_, e, next) => next(e))
 
   on('command.run', { command: 'embers' }, async ($, e) => {
     const arg = e.args.trim()
@@ -177,14 +177,14 @@ export const register: Register = (on, options) => {
       lastCacheTouch: undefined,
     }))
     return result
-  }).catch(($, e, next) => next(e))
+  }).catch((_, e, next) => next(e))
 
   // A `/clear`, the person's or the swap's: the new conversation has nothing
   // cached, no timer, and nothing for the band. No `session.start` follows it.
   on('session.end', async ($, e, next) => {
     if (e.reason === 'clear') await cleared($)
     return next(e)
-  }).catch(($, e, next) => next(e))
+  }).catch((_, e, next) => next(e))
 
   on('classic.PostModelSwitch', async ($, e, next) => {
     disarm()
@@ -200,7 +200,7 @@ export const register: Register = (on, options) => {
       lapse: undefined,
     }))
     return next(e)
-  }).catch(($, e, next) => next(e))
+  }).catch((_, e, next) => next(e))
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (!config.showBand || e.props.hasSurvey) return next(e)

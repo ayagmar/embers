@@ -1,5 +1,5 @@
-import { atom, read, update } from 'claude-code'
 import type { EngineInterface, ModelUsage, PromptSubmitResult, Timer } from 'claude-code'
+import { atom, read, update } from 'claude-code'
 
 import type { EmbersRun, HandoffRecord } from '../types'
 import {
@@ -13,28 +13,28 @@ import {
   ttlKey,
   ttlMinutes,
 } from './records'
+import type { Config } from './shared'
 import {
+  clockTime,
+  compose,
+  dateTime,
   FRESH,
+  fixedTokens,
+  forkFigures,
   HANDOFF_PROMPT,
+  handoffTokens,
+  isWarmRead,
   KNOWN_TTLS,
+  k,
   LOAD,
+  lastAssistantText,
   MINUTE,
+  minutesOf,
   SEND,
   SKIP,
   SLACK_MS,
   SWAP,
-  clockTime,
-  compose,
-  dateTime,
-  fixedTokens,
-  forkFigures,
-  handoffTokens,
-  isWarmRead,
-  k,
-  lastAssistantText,
-  minutesOf,
 } from './shared'
-import type { Config } from './shared'
 
 export const INITIAL: EmbersRun = {
   phase: 'idle',
