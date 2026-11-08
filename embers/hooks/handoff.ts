@@ -1,4 +1,4 @@
-import type { EngineInterface, ModelUsage, PromptSubmitResult } from 'claude-code'
+import type { EngineInterface, ModelForkResult, ModelUsage, PromptSubmitResult } from 'claude-code'
 
 import type { HandoffRecord } from '../types'
 import { disarm, inProcess } from './process'
@@ -13,12 +13,13 @@ import {
   ttlKey,
   ttlMinutes,
 } from './records'
-import type { Config } from './shared'
+import type { ColdChoice, Config } from './shared'
 import {
+  COLD_LABELS,
   clockTime,
+  coldChoiceOf,
   compose,
   dateTime,
-  FRESH,
   fixedTokens,
   forkFigures,
   HANDOFF_PROMPT,
@@ -30,10 +31,8 @@ import {
   lastAssistantText,
   MINUTE,
   minutesOf,
-  SEND,
   SKIP,
   SLACK_MS,
-  SWAP,
 } from './shared'
 import {
   apply,
@@ -49,7 +48,24 @@ import {
   readRun,
 } from './state'
 
-type Written = { record: HandoffRecord; usage: ModelUsage } | { reason: string; usage?: ModelUsage }
+type NoHandoff =
+  | 'no context size yet'
+  | 'the conversation moved on while it was written'
+  | Extract<ModelForkResult, { isAnswered: false }>['reason']
+
+type Written =
+  | { kind: 'written'; record: HandoffRecord; usage: ModelUsage }
+  | { kind: 'none'; reason: NoHandoff; usage?: ModelUsage }
+
+/** What a fork came to, for a toast or a command's reply. */
+export function outcome(written: Written): string {
+  switch (written.kind) {
+    case 'written':
+      return `Handoff written; ${forkFigures(written.usage)}`
+    case 'none':
+      return `No handoff (${written.reason})${written.usage ? `; ${forkFigures(written.usage)}` : ''}`
+  }
+}
 
 export async function ttlMs($: EngineInterface, config: Config): Promise<number> {
   return (await ttlMinutes($, config.ttlMinutes)) * MINUTE
@@ -78,7 +94,7 @@ export async function writeHandoff($: EngineInterface, config: Config): Promise<
   if (contextTokens === undefined) {
     // No timer runs now: an `armed` phase would promise a handoff that never comes.
     await apply($, forkSkipped)
-    return { reason: 'no context size yet' }
+    return { kind: 'none', reason: 'no context size yet' }
   }
   const lastAssistant = lastAssistantText(await $.session.messages())
   const branch = await currentBranch($)
@@ -88,13 +104,15 @@ export async function writeHandoff($: EngineInterface, config: Config): Promise<
   const now = await $.clock.now()
   if (!reply.isAnswered) {
     await apply($, forkFailed)
-    return reply.reason === 'nothing-to-fork' ? { reason: reply.reason } : { reason: reply.reason, usage: reply.usage }
+    return reply.reason === 'nothing-to-fork'
+      ? { kind: 'none', reason: reply.reason }
+      : { kind: 'none', reason: reply.reason, usage: reply.usage }
   }
   const [sessionAfter, turnsAfter, s] = await Promise.all([$.session.id(), $.session.turns(), readRun($)])
   if (sessionAfter !== sessionId || turnsAfter !== turns || s.phase.kind !== 'writing') {
     // A turn or a /clear that moved on set its own phase; only a stale `writing` is ours.
     await apply($, forkFailed)
-    return { reason: 'the conversation moved on while it was written', usage: reply.usage }
+    return { kind: 'none', reason: 'the conversation moved on while it was written', usage: reply.usage }
   }
   const record: HandoffRecord = {
     v: 1,
@@ -111,7 +129,7 @@ export async function writeHandoff($: EngineInterface, config: Config): Promise<
   await $.store.set(handoffKey(root, sessionId), record)
   await sweep($, now, ttl)
   await apply($, forkWritten, { now, ttl, isWarm: isWarmRead(reply.usage), contextTokens })
-  return { record, usage: reply.usage }
+  return { kind: 'written', record, usage: reply.usage }
 }
 
 async function fire($: EngineInterface, config: Config): Promise<void> {
@@ -129,12 +147,7 @@ async function fire($: EngineInterface, config: Config): Promise<void> {
     $.ui.toast(`embers: handoff skipped, the cache had already lapsed after ${minutesOf(now - cache.touchedAt)}m idle`)
     return
   }
-  const written = await writeHandoff($, config)
-  $.ui.toast(
-    'record' in written
-      ? `embers: handoff written; ${forkFigures(written.usage)}`
-      : `embers: no handoff (${written.reason})${written.usage ? `; ${forkFigures(written.usage)}` : ''}`,
-  )
+  $.ui.toast(`embers: ${outcome(await writeHandoff($, config))}`)
 }
 
 /** After a `/clear`: a new conversation with nothing cached and no timer. */
@@ -212,29 +225,30 @@ export async function coldPrompt(
 
   // Writing a handoff now would reread the cold prefix and then throw that
   // write away: with no handoff on file, the choice is to send or start fresh.
-  let choice: string
+  let choice: ColdChoice
   if (config.coldMode === 'swap' && matching !== undefined) {
-    choice = SWAP
+    choice = 'swap'
   } else {
     const swapCost =
       matching === undefined
         ? ''
         : `; swapping to the ${clockTime(matching.writtenAt)} handoff writes ~${k(fixed + handoffTokens(matching))}`
     const question = `The prompt cache is cold (${minutesOf(idleMs)}m idle). Sending rewrites ${k(tokens)} tokens${swapCost}; a fresh session writes ~${k(fixed)} (paste attachments again). What now?`
-    const labels = matching === undefined ? [SEND, FRESH] : [SWAP, SEND, FRESH]
-    choice = await $.ui.ask(question, { header: 'embers', options: labels }).catch(() => SEND)
+    const choices: ColdChoice[] = matching === undefined ? ['send', 'fresh'] : ['swap', 'send', 'fresh']
+    const options = choices.map(option => COLD_LABELS[option])
+    choice = coldChoiceOf(await $.ui.ask(question, { header: 'embers', options }).catch(() => COLD_LABELS.send))
   }
 
-  if (choice !== FRESH && choice !== SWAP) return undefined
+  if (choice === 'send') return undefined
   // The host refuses a compaction or a command under the turn a prompt.submit
   // hook holds, so the prompt is dropped (the engine puts it back in the box)
   // and the session is reshaped from a timer for the person to send it again.
-  const plan = { swapTo: choice === SWAP ? matching : undefined, tokens, fixed }
+  const plan = { swapTo: choice === 'swap' ? matching : undefined, tokens, fixed }
   inProcess.isReshaping = true
   $.clock.after(0, () => {
     void reshape($, plan).catch(error => $.ui.log(`embers: ${choice} failed: ${String(error)}`, { to: 'debug' }))
   })
-  const what = choice === FRESH ? 'starting fresh' : 'swapping to the handoff'
+  const what = choice === 'fresh' ? 'starting fresh' : 'swapping to the handoff'
   return { drop: `embers: ${what}; your prompt stays in the box (paste attachments again)` }
 }
 

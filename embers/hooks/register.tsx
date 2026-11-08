@@ -6,6 +6,7 @@ import {
   coldPrompt,
   observeTtl,
   offerHandoff,
+  outcome,
   seedFromHandoff,
   status,
   ttlMs,
@@ -13,7 +14,7 @@ import {
 } from './handoff'
 import { disarm, inProcess } from './process'
 import { handoffKey, marginFor, sweep, ttlKey } from './records'
-import { bandLine, CANCEL, forkFigures, isPersonPrompt, k, MINUTE, readConfig, WRITE } from './shared'
+import { bandLine, CANCEL, isPersonPrompt, k, MINUTE, readConfig, WRITE } from './shared'
 import {
   apply,
   forkFailed,
@@ -160,13 +161,7 @@ export const register: Register = (on, options) => {
       if (answer !== WRITE) return { text: 'No handoff written.' }
     }
     disarm()
-    const written = await writeHandoff($, config)
-    return {
-      text:
-        'record' in written
-          ? `Handoff written; ${forkFigures(written.usage)}.`
-          : `No handoff (${written.reason})${written.usage ? `; ${forkFigures(written.usage)}` : ''}.`,
-    }
+    return { text: `${outcome(await writeHandoff($, config))}.` }
   }).catch(() => ({ text: 'embers: the command failed; the debug log has why.' }))
 
   // A changed effort level makes the next request rewrite the cache on models

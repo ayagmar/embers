@@ -17,9 +17,16 @@ export const HANDOFF_PROMPT = [
   'Plain text, no preamble.',
 ].join(' ')
 
-export const SWAP = 'Swap to handoff'
-export const SEND = 'Send as is'
-export const FRESH = 'Fresh session'
+export type ColdChoice = 'swap' | 'send' | 'fresh'
+export const COLD_LABELS: Record<ColdChoice, string> = {
+  swap: 'Swap to handoff',
+  send: 'Send as is',
+  fresh: 'Fresh session',
+}
+/** The choice behind an answer; free text typed under "Other" sends the prompt. */
+export const coldChoiceOf = (label: string): ColdChoice =>
+  label === COLD_LABELS.swap ? 'swap' : label === COLD_LABELS.fresh ? 'fresh' : 'send'
+
 export const LOAD = 'Load it'
 export const SKIP = 'Skip'
 export const WRITE = 'Write it'
@@ -140,5 +147,7 @@ export function bandLine(s: EmbersRun, config: Config): string | undefined {
       return 'embers  writing handoff…'
     case 'ready':
       return `embers  handoff ready  ${clockTime(phase.handoffAt)}, ${k(tokens)} tokens, warm until ${clockTime(phase.cache.warmUntil)}`
+    default:
+      return phase satisfies never
   }
 }
