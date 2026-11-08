@@ -16,11 +16,11 @@ Updated 2026-11-08.
 
 ## In flight
 
-- `refactor/sweep` is pushed and not merged. It needs review and a merge.
+- `refactor/sweep` is pushed and not merged. Review findings are fixed (`briefs/09-status.md`). It needs a merge.
 
 ## Next
 
-1. Run the mod in a real session with default settings for a few days: `claude --plugin-dir ~/projects/embers/embers`. Watch the `wrote` figure in the fork toasts after a long agentic turn.
+1. Run the mod in a real session with default settings for a few days: `claude --plugin-dir ~/projects/embers/embers`..
 2. Add an icon if the mod is ever published.
 
 ## Decisions taken
@@ -31,6 +31,6 @@ Updated 2026-11-08.
 
 ## Open
 
-- The fork's uncached tail is the last turn (explained in `briefs/05-recheck-report.md`); one fork after a multi-step turn is still unmeasured. Manifest `author` and icon are publishing metadata, left for the owner.
+- What a fork writes: measured once after a multi-step turn: 0 written (`briefs/09-status.md`); why a conversation's first turn writes about 7.6k is not established. Manifest `author` and icon are publishing metadata, left for the owner.
 - Whether the org plugin bypass of `classic.*` hooks also applies to `classic.PostModelSwitch` (assumed yes; the mod no longer depends on it).
 - Publishing: not planned until the mod has run for a few days with default settings.
