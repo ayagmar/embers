@@ -1,0 +1,15 @@
+{
+  "name": "embers-dev",
+  "private": true,
+  "scripts": {
+    "format": "biome format --write embers",
+    "lint": "biome check --error-on-warnings embers",
+    "typecheck": "npx --yes -p typescript@7.0.2 tsc -p embers",
+    "test": "claude plugin test embers",
+    "validate": "claude plugin validate embers",
+    "check": "npm run lint && npm run typecheck && npm run test && npm run validate"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.6.6"
+  }
+}
