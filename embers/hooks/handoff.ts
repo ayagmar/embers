@@ -86,7 +86,11 @@ export async function writeHandoff($: EngineInterface, config: Config): Promise<
     $.session.usage(),
   ])
   const contextTokens = usage.context.tokens
-  if (contextTokens === undefined) return { reason: 'no context size yet' }
+  if (contextTokens === undefined) {
+    // No timer runs now: an `armed` phase would promise a handoff that never comes.
+    await change($, r => ({ ...r, phase: 'idle', deadline: undefined }))
+    return { reason: 'no context size yet' }
+  }
   const lastAssistant = lastAssistantText(await $.session.messages())
   const branch = await currentBranch($)
   await change($, r => ({ ...r, phase: 'writing', deadline: undefined }))
@@ -105,6 +109,8 @@ export async function writeHandoff($: EngineInterface, config: Config): Promise<
     read($, run),
   ])
   if (sessionAfter !== sessionId || turnsAfter !== turns || s.phase !== 'writing') {
+    // A turn or a /clear that moved on set its own phase; only a stale `writing` is ours.
+    await change($, r => (r.phase === 'writing' ? { ...r, phase: 'idle' } : r))
     return { reason: 'the conversation moved on while it was written', usage: reply.usage }
   }
   const record: HandoffRecord = {

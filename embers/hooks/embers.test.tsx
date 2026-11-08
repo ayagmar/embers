@@ -517,6 +517,25 @@ test('a shorter TTL is stored after cold reads in two idle periods, and cleared 
   expect(world.forks).toBe(2)
 })
 
+test('/embers on a cold cache asks before a fork that rereads the whole context', async ($, on) => {
+  const world = engine(on, { answer: 'Cancel' })
+  const clock = mock.clock(on, { now: T0 })
+  memoryStore(on)
+  const embers = { command: 'embers', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 120 } } as const
+
+  await $.session.start({ ...start, isInteractive: false })
+  await $.turn.complete(turnEnd)
+  await clock.set(T0 + 70 * MINUTE)
+  expect(await $.command.run(embers)).toEqual({ text: 'No handoff written.' })
+  expect(world.asks[0]?.question).toContain('The prompt cache is cold, so a handoff now rereads 100k tokens')
+  expect(world.forks).toBe(0)
+
+  world.answer = 'Write it'
+  const written = await $.command.run(embers)
+  expect(world.forks).toBe(1)
+  expect(written.text).toStartWith('Handoff written')
+})
+
 test('a userConfig reload while armed keeps the deadline and arms one timer', { options: { marginMinutes: 10 } }, async ($, on) => {
   const world = engine(on)
   const state = stateLog(on)

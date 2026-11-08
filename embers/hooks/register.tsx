@@ -142,6 +142,7 @@ export const register: Register = (on, options) => {
     }
     if (arg !== '') return { text: 'Usage: /embers [status|off]' }
     const [s, now, ttl, usage] = await Promise.all([readRun($), $.clock.now(), ttlMs($, config), $.session.usage()])
+    if (s.phase === 'writing') return { text: 'embers: a handoff is being written; run /embers again when it is done.' }
     if (s.lastCacheTouch === undefined || now - s.lastCacheTouch >= ttl) {
       const tokens = usage.context.tokens
       const size = tokens === undefined ? 'the whole conversation' : `${k(tokens)} tokens`
