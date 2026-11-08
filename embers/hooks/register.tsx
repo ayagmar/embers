@@ -168,11 +168,16 @@ export const register: Register = (on, options) => {
     return result
   }).catch(($, e, next) => next(e))
 
+  // A `/clear`, the person's or the swap's: the new conversation has nothing
+  // cached, no timer, and nothing for the band. No `session.start` follows it.
+  on('session.end', async ($, e, next) => {
+    if (e.reason === 'clear') await cleared($)
+    return next(e)
+  }).catch(($, e, next) => next(e))
+
   on('classic.SessionStart', async ($, e, next) => {
     if (e.agent_id !== undefined) return next(e)
-    if (e.source === 'clear') {
-      await cleared($)
-    } else if (e.source === 'startup' && config.offerOnStart) {
+    if (e.source === 'startup' && config.offerOnStart) {
       $.clock.after(0, () => {
         void offerHandoff($, config).catch(error => $.ui.log(`embers: start offer failed: ${String(error)}`, { to: 'debug' }))
       })

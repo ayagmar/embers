@@ -129,6 +129,12 @@ function engine(on: On, overrides: Partial<World> = {}): World {
     return { isFilled: true }
   })
   on('turn.complete', (_, e) => ({ text: e.answer }))
+  on('session.end', (_, e) => ({ sessionId: e.sessionId }))
+  // The engine's own band, drawn when embers passes.
+  on('ui.render', ($, e) => {
+    const { Text } = $.ui.resolve(e)
+    return <Text>engine</Text>
+  })
   // eslint-disable-next-line require-yield
   on('turn.step', async function* (_, e) {
     return {
@@ -210,6 +216,19 @@ const asRun = (written: unknown): Run =>
   typeof written === 'object' && written !== null && 'value' in written && typeof written.value === 'object' && written.value !== null
     ? written.value
     : {}
+/** The text of the band above the prompt, '' when embers draws none. */
+async function band($: Engine): Promise<string> {
+  const ui = await $.ui.mount({
+    plugin: 'embers',
+    surface: 'terminal',
+    component: 'AbovePrompt',
+    props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 120, scroll: { offset: 0, bodyRows: 10 }, view: {} },
+  })
+  const text = (await ui.find({ type: 'Text', text: /embers/ }))?.text ?? ''
+  await ui.unmount()
+  return text
+}
+
 /** The main loop's first request of a turn, read to its end. */
 async function step($: Engine, model = 'claude-test'): Promise<void> {
   const stream = $.turn.step({ turnId: 't', index: 0, model, messageCount: 4 })
@@ -291,6 +310,22 @@ test('a resumed session with its handoff on file is offered the swap before any 
   expect(world.asks[0]?.question).toContain('Sending rewrites 100k tokens')
   expect(world.commands).toEqual(['clear'])
   expect(session.appended()).toHaveLength(1)
+})
+
+test('a /clear typed by the person drops the old band and timer', async ($, on) => {
+  const world = engine(on)
+  const clock = mock.clock(on, { now: T0 })
+  memoryStore(on)
+
+  await $.session.start(start)
+  await $.turn.complete(turnEnd)
+  expect(await band($)).toContain('embers  warm  handoff at')
+  await $.session.end({ reason: 'clear', sessionId: SESSION, resume: { id: SESSION } })
+
+  expect(await band($)).toBe('')
+  await clock.advance(55 * MINUTE)
+  expect(world.forks).toBe(0)
+  expect(world.toasts).toEqual([])
 })
 
 test('a handoff whose turn count no longer matches is not swapped to', async ($, on) => {
