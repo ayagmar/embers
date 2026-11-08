@@ -25,6 +25,8 @@ const COLD: ModelUsage = {
 /** What the engine beneath the plugin holds, and what reached it. */
 type World = {
   model: string
+  /** What `$.session.surfaces()` answers; empty under -p. */
+  surfaces: readonly ('terminal' | 'desktop')[]
   /** What the main loop's next request reads from the cache. */
   stepUsage: ModelUsage
   turns: number
@@ -45,6 +47,7 @@ type World = {
 function engine(on: On, overrides: Partial<World> = {}): World {
   const world: World = {
     model: 'claude-test',
+    surfaces: ['terminal'],
     stepUsage: WARM,
     turns: 3,
     contextTokens: 100_000,
@@ -63,6 +66,7 @@ function engine(on: On, overrides: Partial<World> = {}): World {
   on('session.id', () => ({ value: SESSION }))
   on('session.root', () => ({ value: ROOT }))
   on('session.model', () => ({ value: world.model }))
+  on('session.surfaces', () => ({ value: world.surfaces }))
   on('session.turns', () => ({ value: world.turns }))
   on('session.messages', () => ({
     value: [
@@ -407,7 +411,7 @@ test('the start offer shows only at a fresh interactive start, and not again aft
 })
 
 test('Fresh at a cold prompt clears the session with no fork and no handoff row', async ($, on) => {
-  const world = engine(on, { answer: 'Fresh session' })
+  const world = engine(on, { answer: 'Fresh session', surfaces: [] })
   const clock = mock.clock(on, { now: T0 })
   memoryStore(on)
   const session = mock.session(on)
@@ -428,7 +432,7 @@ test('Fresh at a cold prompt clears the session with no fork and no handoff row'
 })
 
 test('a handoff whose turn count no longer matches is not swapped to', async ($, on) => {
-  const world = engine(on, { turns: 5 })
+  const world = engine(on, { turns: 5, surfaces: [] })
   const clock = mock.clock(on, { now: T0 })
   const store = memoryStore(on)
 
@@ -573,7 +577,7 @@ test('a shorter TTL is stored after cold reads in two idle periods, and cleared 
 })
 
 test('/embers on a cold cache asks before a fork that rereads the whole context', async ($, on) => {
-  const world = engine(on, { answer: 'Cancel' })
+  const world = engine(on, { answer: 'Cancel', surfaces: [] })
   const clock = mock.clock(on, { now: T0 })
   memoryStore(on)
   const embers = { command: 'embers', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 120 } } as const

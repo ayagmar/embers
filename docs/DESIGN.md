@@ -61,7 +61,7 @@ Two things make it worse:
 - `startOffered`: whether the start offer was shown this session
 - `lapse`: a held or stored TTL observation (see "TTL observation")
 
-Module variables hold what must outlive a `/clear` and may start over on a reload: the timer handle, `isInteractive` (set by every `session.start`), and whether a swap is running. A `/clear` starts `$.state` over and no `session.start` follows it.
+Module variables hold what must outlive a `/clear` and may start over on a reload: the timer handle, whether a swap is running, and a mirror of `isOff`, merged with the state on every read and write so `/embers off` survives both. A `/clear` starts `$.state` over and no `session.start` follows it. Whether the session is interactive is not kept: `turn.complete` reads `$.session.surfaces()`, empty under `-p`.
 
 The effort level is not kept: no API reads it while idle. `/effort` disarms the timer and clears the cache touch instead.
 

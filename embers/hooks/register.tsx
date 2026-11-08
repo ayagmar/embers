@@ -20,9 +20,6 @@ import { MINUTE, WRITE, CANCEL, bandLine, forkFigures, isPersonPrompt, k, readCo
 
 export const register: Register = (on, options) => {
   const config = readConfig(options)
-  // Set by `session.start`, false under -p and the SDK. Kept here, not in
-  // `$.state`: a `/clear` starts the state over and no `session.start` follows.
-  let isInteractive = false
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -31,7 +28,6 @@ export const register: Register = (on, options) => {
       argumentHint: '[status|off]',
     })
     const [now, ttl] = await Promise.all([$.clock.now(), ttlMs($, config)])
-    isInteractive = e.isInteractive
     // Fires on reload too: the state survived, the timer and any swap in flight did not.
     const s = await change($, r => ({ ...r, phase: r.phase === 'writing' ? 'idle' : r.phase }))
     if (s.phase === 'armed' && s.deadline !== undefined) arm($, config, now, s.deadline)
@@ -85,14 +81,17 @@ export const register: Register = (on, options) => {
   on('turn.complete', async ($, e, next) => {
     if (e.agentId !== undefined) return next(e)
     disarm()
-    const [now, sessionId, root, usage, ttl, model] = await Promise.all([
+    const [now, sessionId, root, usage, ttl, model, surfaces] = await Promise.all([
       $.clock.now(),
       $.session.id(),
       $.session.root(),
       $.session.usage(),
       ttlMs($, config),
       $.session.model(),
+      // Read each time: none under -p, and nothing for a /clear or a reload to lose.
+      $.session.surfaces(),
     ])
+    const isInteractive = surfaces.length > 0
     // A handoff of this session is overtaken by the turn that just ended.
     await $.store.delete(handoffKey(root, sessionId))
     const tokens = usage.context.tokens
