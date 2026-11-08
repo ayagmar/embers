@@ -117,7 +117,7 @@ export function compose(record: HandoffRecord): string {
 
 export function forkFigures(usage: ModelUsage): string {
   const cold = isWarmRead(usage) ? '' : ' (the cache was cold)'
-  return `cache_read_input_tokens ${k(usage.cache_read_input_tokens)}, output_tokens ${k(usage.output_tokens)}${cold}`
+  return `cache_read_input_tokens ${k(usage.cache_read_input_tokens)}, cache_creation_input_tokens ${k(usage.cache_creation_input_tokens)}, output_tokens ${k(usage.output_tokens)}${cold}`
 }
 
 /** A prompt the person typed at an idle session; everything else passes untouched. */
