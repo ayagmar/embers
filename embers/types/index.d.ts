@@ -39,6 +39,8 @@ export type HandoffRecord = {
   contextTokens: number
   text: string
   lastAssistant: string
+  /** When the start offer showed it and the person skipped it; it is not offered again. */
+  offeredAt?: number
 }
 
 /** `$.store` key `ttl:<model>`. */

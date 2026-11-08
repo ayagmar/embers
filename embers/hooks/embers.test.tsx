@@ -328,6 +328,39 @@ test('a /clear typed by the person drops the old band and timer', async ($, on) 
   expect(world.toasts).toEqual([])
 })
 
+test('the start offer shows only at a fresh interactive start, and not again after Skip', async ($, on) => {
+  const world = engine(on, { answer: 'Skip', turns: 0 })
+  const clock = mock.clock(on, { now: T0 })
+  memoryStore(on, { [`handoff:${ROOT}:old`]: handoff({ sessionId: 'old', writtenAt: T0 - 120 * MINUTE }) })
+  // A later process starts with no `$.state` of its own.
+  let isNewProcess = false
+  on('state.get', async (_, e, next) => {
+    const read = await next(e)
+    return isNewProcess && 'value' in read && read.value !== undefined ? { value: { ...read.value, value: undefined } } : read
+  })
+  on('state.set', (_, e, next) => {
+    isNewProcess = false
+    return next(e)
+  })
+
+  await $.session.start({ ...start, isInteractive: false })
+  await clock.settle()
+  world.turns = 2
+  await $.session.start(start)
+  await clock.settle()
+  expect(world.asks).toEqual([])
+
+  world.turns = 0
+  await $.session.start(start)
+  await clock.settle()
+  expect(world.asks.map(ask => ask.labels)).toEqual([['Load it', 'Skip']])
+
+  isNewProcess = true
+  await $.session.start(start)
+  await clock.settle()
+  expect(world.asks).toHaveLength(1)
+})
+
 test('a handoff whose turn count no longer matches is not swapped to', async ($, on) => {
   const world = engine(on, { turns: 5 })
   const clock = mock.clock(on, { now: T0 })

@@ -323,7 +323,11 @@ export async function offerHandoff($: EngineInterface, config: Config): Promise<
     ttlMs($, config),
   ])
   const offer = (await listHandoffs($, root)).find(
-    record => record.branch === branch && record.sessionId !== sessionId && now - record.writtenAt >= ttl,
+    record =>
+      record.branch === branch &&
+      record.sessionId !== sessionId &&
+      record.offeredAt === undefined &&
+      now - record.writtenAt >= ttl,
   )
   if (offer === undefined) return
   const where = offer.branch === '' ? 'this folder' : `branch ${offer.branch}`
@@ -333,7 +337,10 @@ export async function offerHandoff($: EngineInterface, config: Config): Promise<
       { header: 'embers', options: [LOAD, SKIP] },
     )
     .catch(() => SKIP)
-  if (answer !== LOAD) return
+  if (answer !== LOAD) {
+    await $.store.set(handoffKey(offer.root, offer.sessionId), { ...offer, offeredAt: now })
+    return
+  }
   await $.session.append({ message: { type: 'user', content: [{ type: 'text', text: compose(offer) }] } })
   await $.store.delete(handoffKey(offer.root, offer.sessionId))
   $.ui.toast(`embers: loaded the ${clockTime(offer.writtenAt)} handoff (~${k(handoffTokens(offer))} tokens)`)

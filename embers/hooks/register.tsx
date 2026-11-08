@@ -37,6 +37,13 @@ export const register: Register = (on, options) => {
     if (s.phase === 'armed' && s.deadline !== undefined) arm($, config, now, s.deadline)
     if (s.lastCacheTouch === undefined) await seedFromHandoff($)
     await sweep($, now)
+    // Once per session, never under -p, and not into a resumed conversation,
+    // which already holds its own context.
+    if (config.offerOnStart && e.isInteractive && !s.startOffered && (await $.session.turns()) === 0) {
+      $.clock.after(0, () => {
+        void offerHandoff($, config).catch(error => $.ui.log(`embers: start offer failed: ${String(error)}`, { to: 'debug' }))
+      })
+    }
     return next(e)
   }).catch(($, e, next) => next(e))
 
@@ -172,16 +179,6 @@ export const register: Register = (on, options) => {
   // cached, no timer, and nothing for the band. No `session.start` follows it.
   on('session.end', async ($, e, next) => {
     if (e.reason === 'clear') await cleared($)
-    return next(e)
-  }).catch(($, e, next) => next(e))
-
-  on('classic.SessionStart', async ($, e, next) => {
-    if (e.agent_id !== undefined) return next(e)
-    if (e.source === 'startup' && config.offerOnStart) {
-      $.clock.after(0, () => {
-        void offerHandoff($, config).catch(error => $.ui.log(`embers: start offer failed: ${String(error)}`, { to: 'debug' }))
-      })
-    }
     return next(e)
   }).catch(($, e, next) => next(e))
 

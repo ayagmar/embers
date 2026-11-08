@@ -13,7 +13,7 @@ const isObject = (value: unknown): value is Record<string, unknown> =>
 
 function parseHandoff(key: string, value: unknown): HandoffRecord | undefined {
   if (!isObject(value) || value.v !== 1) return undefined
-  const { root, branch, sessionId, turns, writtenAt, contextTokens, text, lastAssistant } = value
+  const { root, branch, sessionId, turns, writtenAt, contextTokens, text, lastAssistant, offeredAt } = value
   if (
     typeof root !== 'string' ||
     typeof branch !== 'string' ||
@@ -23,11 +23,13 @@ function parseHandoff(key: string, value: unknown): HandoffRecord | undefined {
     typeof contextTokens !== 'number' ||
     typeof text !== 'string' ||
     typeof lastAssistant !== 'string' ||
+    (offeredAt !== undefined && typeof offeredAt !== 'number') ||
     key !== handoffKey(root, sessionId)
   ) {
     return undefined
   }
-  return { v: 1, root, branch, sessionId, turns, writtenAt, contextTokens, text, lastAssistant }
+  const record: HandoffRecord = { v: 1, root, branch, sessionId, turns, writtenAt, contextTokens, text, lastAssistant }
+  return offeredAt === undefined ? record : { ...record, offeredAt }
 }
 
 function parseTtl(value: unknown): TtlRecord | undefined {
