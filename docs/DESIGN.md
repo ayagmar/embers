@@ -13,7 +13,7 @@ Two things make it worse:
 
 ## What embers does
 
-1. **Warm handoff.** When a main-loop turn ends on a session whose context is above a size threshold, embers arms one timer for TTL minus a margin. If the session is still idle when it fires, embers asks the model for a handoff with `$.model.fork`. A fork rides the main thread's cached prefix, so it costs the handoff's output tokens plus a few hundred input tokens. A cache read also renews the entry, so the fork keeps the prefix warm for one more TTL. The handoff is stored in `$.store`, bound to the session id and turn count it was written from.
+1. **Warm handoff.** When a main-loop turn ends on a session whose context is above a size threshold, embers arms one timer for TTL minus a margin. If the session is still idle when it fires, embers asks the model for a handoff with `$.model.fork`. A fork rides the main thread's cached prefix, so it costs the handoff's output tokens plus a cache write of its uncached tail (see "Rules that keep it cheap"). A cache read also renews the entry, so the fork keeps the prefix warm for one more TTL. The handoff is stored in `$.store`, bound to the session id and turn count it was written from.
 
 2. **Cold prompt.** On a person's `prompt.submit` on the main loop, embers compares the time since the last cache touch (the last main-loop turn end, or a later fork that read the cache) with the TTL.
    - Under the TTL: the prompt passes through. Nothing drawn, nothing logged.
@@ -36,7 +36,8 @@ Two things make it worse:
 
 - One fork per idle period. The timer does not re-arm until the next main-loop turn ends. An abandoned session costs one handoff.
 - Nothing happens below `minContextTokens`. The size is `(await $.session.usage()).context.tokens` read in the main-loop `turn.complete`; absent (right after a compaction) counts as below threshold. `e.usage` on `turn.complete` sums every response of the turn and is the wrong figure.
-- The fork names no `effort`. On a model without per-message effort, a named effort rewrites the whole conversation into a new cache entry. The handoff prompt says there are no tools and asks for a direct answer without deliberation, so the uncached tail is a few hundred tokens.
+- The fork names no `effort`. On a model without per-message effort, a named effort rewrites the whole conversation into a new cache entry. The handoff prompt says there are no tools and asks for a direct answer without deliberation.
+- The fork's uncached tail is the last turn, not a few hundred tokens: the prompt plus every tool result and step of that turn is written to the cache at 1.25 times the input price, in an entry the main thread does not reuse. In the live run, a fork after a conversation's first turn wrote about 7.6k tokens and a fork after its second turn wrote 3. A last turn with 30k of tool output would write about 30k; that has not been measured. It stays far cheaper than rewriting the whole prefix cold.
 - The fork is skipped when the effort level changed while idle, when a turn is running, when the session is not interactive, and when the wall clock says the cache has already lapsed (a laptop that slept through the deadline). A skipped fork writes nothing.
 - `/embers` on a cold cache says so and asks before forking.
 - Every fork and swap toasts its `cache_read_input_tokens`, `output_tokens` and, for a swap, the tokens before and after, so the cost is visible.
