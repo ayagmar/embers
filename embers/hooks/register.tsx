@@ -62,7 +62,7 @@ export const register: Register = (on, options) => {
     disarm()
     const s = await apply($, promptStarted)
     const { cache } = s.phase
-    if (isOff(s) || config.coldMode === 'off' || config.coldMode === 'send' || cache === undefined) return next(e)
+    if (isOff(s) || config.coldMode === 'send' || cache === undefined) return next(e)
     const [now, ttl] = await Promise.all([$.clock.now(), ttlMs($, config)])
     const idle = now - cache.touchedAt
     if (idle < ttl) return next(e)

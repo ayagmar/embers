@@ -36,7 +36,7 @@ export const SKIP = 'Skip'
 export const WRITE = 'Write it'
 export const CANCEL = 'Cancel'
 
-export type ColdMode = 'ask' | 'swap' | 'send' | 'off'
+export type ColdMode = 'ask' | 'swap' | 'send'
 export type Config = {
   ttlMinutes: number
   marginMinutes: number
@@ -62,8 +62,8 @@ export function readConfig(options: PluginOptions): Config {
   const instructions = options.handoffInstructions
   if (typeof instructions !== 'string') throw new Error('embers: handoffInstructions is not a string')
   const mode = options.coldMode
-  if (mode !== 'ask' && mode !== 'swap' && mode !== 'send' && mode !== 'off') {
-    throw new Error('embers: coldMode is not ask, swap, send or off')
+  if (mode !== 'ask' && mode !== 'swap' && mode !== 'send') {
+    throw new Error('embers: coldMode is not ask, swap or send')
   }
   return {
     ttlMinutes: num('ttlMinutes'),

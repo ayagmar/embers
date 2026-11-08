@@ -31,8 +31,8 @@
     "coldMode": {
       "type": "string",
       "title": "Cold prompt",
-      "description": "On a cold prompt: ask, swap without asking when a handoff matches, send, or off.",
-      "options": ["ask", "swap", "send", "off"],
+      "description": "On a cold prompt: ask, swap without asking when a handoff matches, or send without asking.",
+      "options": ["ask", "swap", "send"],
       "default": "ask"
     },
     "offerOnStart": {

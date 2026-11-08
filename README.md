@@ -47,7 +47,7 @@ Set these in the plugin's config menu.
 | `marginMinutes` | 5 | How long before the TTL the handoff is written. Cut for short TTLs. |
 | `minContextTokens` | 40000 | Below this context size, embers does nothing. |
 | `minSavingTokens` | 20000 | A swap must shrink the context by at least this much. |
-| `coldMode` | `ask` | On a cold prompt: `ask`, `swap` without asking when a handoff matches, `send`, or `off`. |
+| `coldMode` | `ask` | On a cold prompt: `ask`, `swap` without asking when a handoff matches, or `send` without asking. |
 | `offerOnStart` | true | Offer an earlier handoff when a session starts. |
 | `showBand` | true | Draw the line above the prompt. |
 | `handoffInstructions` | empty | Added to the handoff prompt as its last sentence. |

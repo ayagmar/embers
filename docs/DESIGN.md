@@ -25,7 +25,7 @@ Two things make it worse:
    - The swap's `/clear` gives a new session id. Its toast names `claude --resume <old id>`, which returns to the old conversation, and the handoff text is logged to the transcript, where the person can read it and the model does not.
    - Without a matching handoff the ask offers only send and fresh. Writing a handoff at that point would itself reread the whole cold prefix P at the cache-write price, the same 1.25 × P that sending pays, and the swap would then write the short prefix S at 1.25 × S on top. Sending leaves P warm, read at 0.1 × P per later request. For P = 100k and S = 25k the swap adds about 31k token-equivalents now to save 7.5k per later request: it pays back only after four or more.
    - The question states each choice's size: `The prompt cache is cold (65m idle). Sending rewrites 100k tokens; swapping to the 12:55 handoff writes ~25k; a fresh session writes ~20k (paste attachments again). What now?` Without a handoff the swap clause is left out.
-   - `coldMode` `swap` skips the ask when a matching handoff is on file. `send` and `off` never ask. If the ask rejects (dismissed, non-interactive), the prompt is sent.
+   - `coldMode` `swap` skips the ask when a matching handoff is on file. `send` never asks. If the ask rejects (dismissed, non-interactive), the prompt is sent.
    - The swap is skipped, and the prompt sent, when the saving is small: context tokens minus (system and tools tokens plus handoff tokens) below `minSavingTokens`. The system and tools figure comes from `$.session.usage({ breakdown: "summary" })`.
 
 3. **Handoff on start.** When an interactive session starts with no turns yet (not under `-p`, not a resumed conversation) in a project where a previous session left a handoff older than the TTL on the same branch, embers offers it once per session (`startOffered`, which survives a reload). The check runs in `session.start`; the classic `SessionStart` hook is not used, since an organization plugin can bypass it. Loading appends it as a user message with `$.session.append` and deletes it. Skip records `offeredAt` on the handoff, so it is not offered again. The offer shows the handoff's time and branch.
@@ -90,7 +90,7 @@ Resume: `session.start`, when no cache is known, reads the session's own handoff
 | `marginMinutes` | number | 5 | how long before the TTL the handoff is written; cut to a fifth of a short TTL, but not under a minute (1m for a 5m TTL: the fork runs at 4m) |
 | `minContextTokens` | number | 40000 | below this, embers does nothing |
 | `minSavingTokens` | number | 20000 | a swap must shrink the prefix by at least this |
-| `coldMode` | `ask` / `swap` / `send` / `off` | `ask` | see "Cold prompt" |
+| `coldMode` | `ask` / `swap` / `send` | `ask` | see "Cold prompt" |
 | `offerOnStart` | boolean | true | offer the last handoff of this root and branch on session start |
 | `showBand` | boolean | true | draw the band above the prompt |
 | `handoffInstructions` | string | empty | added to the handoff prompt as its last sentence when set |
