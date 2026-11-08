@@ -172,18 +172,11 @@ function memoryStore(on: On, entries: Record<string, unknown> = {}): Map<string,
   return store
 }
 
-/** The last `run` value embers wrote to `$.state`. */
-function stateLog(on: On): { last: () => unknown } {
-  let last: unknown
-  on('state.set', (_, e, next) => {
-    last = e.value
-    return next(e)
-  })
-  return { last: () => last }
-}
-
-/** A clock the test moves by hand; each timer is held until the test fires it. */
-type Wait = { due: number; signal: AbortSignal; fire: () => void }
+/**
+ * A clock the test moves by hand; each timer is held until the test fires it.
+ * `isLive` is false once the plugin cancelled it or a reload lost it.
+ */
+type Wait = { due: number; isLive: () => boolean; lose: () => void; fire: () => void }
 function manualClock(on: On, start: number): { now: number; waits: Wait[] } {
   const clock = { now: start, waits: [] as Wait[] }
   on('clock.now', () => ({ value: clock.now }))
@@ -191,11 +184,25 @@ function manualClock(on: On, start: number): { now: number; waits: Wait[] } {
     'clock.after',
     (_, e, next) =>
       new Promise(resolve => {
-        clock.waits.push({ due: clock.now + e.ms, signal: next.signal, fire: () => resolve({ value: undefined }) })
+        let isLost = false
+        const isLive = (): boolean => !isLost && !next.signal.aborted
+        clock.waits.push({
+          due: clock.now + e.ms,
+          isLive,
+          lose: () => {
+            isLost = true
+          },
+          fire: () => {
+            if (isLive()) resolve({ value: undefined })
+          },
+        })
       }),
   )
   return clock
 }
+
+/** `HH:MM` in local time, as the band writes it. */
+const hhmm = (ms: number): string => new Date(ms).toTimeString().slice(0, 5)
 
 const start = { cwd: ROOT, surface: 'terminal', isInteractive: true } as const
 const turnEnd = { answer: '', durationMs: 1, isAborted: false, turnId: 't', reason: 'answer' } as const
@@ -216,12 +223,6 @@ function handoff(fields: Partial<HandoffRecord>): HandoffRecord {
   }
 }
 
-type Run = { phase?: string; lastCacheTouch?: number; deadline?: number }
-/** A `state.set` of a shaped value carries `{ shape, value }`. */
-const asRun = (written: unknown): Run =>
-  typeof written === 'object' && written !== null && 'value' in written && typeof written.value === 'object' && written.value !== null
-    ? written.value
-    : {}
 /** The text of the band above the prompt, '' when embers draws none. */
 async function band($: Engine): Promise<string> {
   const ui = await $.ui.mount({
@@ -370,6 +371,27 @@ test('the start offer shows only at a fresh interactive start, and not again aft
   expect(world.asks).toHaveLength(1)
 })
 
+test('Fresh at a cold prompt clears the session with no fork and no handoff row', async ($, on) => {
+  const world = engine(on, { answer: 'Fresh session' })
+  const clock = mock.clock(on, { now: T0 })
+  memoryStore(on)
+  const session = mock.session(on)
+
+  await $.session.start({ ...start, isInteractive: false })
+  await $.turn.complete(turnEnd)
+  await clock.set(T0 + 70 * MINUTE)
+  const dropped = await $.prompt.submit({ text: 'go on', ...typed })
+  await clock.settle()
+
+  expect(dropped.drop).toContain('starting fresh')
+  expect(world.commands).toEqual(['clear'])
+  expect(world.forks).toBe(0)
+  expect(session.appended()).toEqual([])
+  expect(world.toasts).toEqual(['embers: started a fresh session; send your prompt from the box'])
+  expect(await $.prompt.submit({ text: 'go on', ...typed })).toEqual({ text: 'go on' })
+  expect(world.asks).toHaveLength(1)
+})
+
 test('a handoff whose turn count no longer matches is not swapped to', async ($, on) => {
   const world = engine(on, { turns: 5 })
   const clock = mock.clock(on, { now: T0 })
@@ -406,7 +428,6 @@ test('a prompt inside the TTL of a warm fork passes through without asking', asy
 
 test('a subagent turn end and machine prompts leave the timer and the cache touch alone', async ($, on) => {
   const world = engine(on)
-  const state = stateLog(on)
   const clock = mock.clock(on, { now: T0 })
   memoryStore(on)
 
@@ -417,7 +438,7 @@ test('a subagent turn end and machine prompts leave the timer and the cache touc
   await $.prompt.submit({ text: 'tick', wait: false, origin: { kind: 'scheduled-trigger' } })
   await $.prompt.submit({ text: 'done', wait: false, isMeta: true, origin: { kind: 'task-notification' } })
 
-  expect(asRun(state.last())).toMatchObject({ phase: 'armed', lastCacheTouch: T0, deadline: T0 + 55 * MINUTE })
+  expect(await band($)).toBe(`embers  warm  handoff at ${hhmm(T0 + 55 * MINUTE)}`)
   expect(world.asks).toEqual([])
   await clock.set(T0 + 55 * MINUTE)
   expect(world.forks).toBe(1)
@@ -425,7 +446,6 @@ test('a subagent turn end and machine prompts leave the timer and the cache touc
 
 test('a timer that fires after the cache lapsed (slept laptop) forks nothing', async ($, on) => {
   const world = engine(on)
-  const state = stateLog(on)
   const clock = manualClock(on, T0)
   const store = memoryStore(on)
 
@@ -438,7 +458,7 @@ test('a timer that fires after the cache lapsed (slept laptop) forks nothing', a
   expect(world.forks).toBe(0)
   expect([...store.keys()]).toEqual([])
   expect(world.toasts.some(text => text.includes('handoff skipped'))).toBe(true)
-  expect(asRun(state.last()).phase).toBe('idle')
+  expect(await band($)).toBe('')
 })
 
 test('a 5m TTL forks the handoff near its end, not one minute after every turn', async ($, on) => {
@@ -536,20 +556,20 @@ test('/embers on a cold cache asks before a fork that rereads the whole context'
   expect(written.text).toStartWith('Handoff written')
 })
 
-test('a userConfig reload while armed keeps the deadline and arms one timer', { options: { marginMinutes: 10 } }, async ($, on) => {
+test('a userConfig reload while armed re-arms the timer the reload lost, once', { options: { marginMinutes: 10 } }, async ($, on) => {
   const world = engine(on)
-  const state = stateLog(on)
   const clock = manualClock(on, T0)
   memoryStore(on)
 
   await $.session.start(start)
   await $.turn.complete(turnEnd)
   clock.now = T0 + 20 * MINUTE
-  // A reload runs `session.start` again; `$.state` survived it.
+  // A reload starts the module over: its timer is gone, `$.state` survived.
+  for (const wait of clock.waits) wait.lose()
   await $.session.start(start)
 
-  expect(asRun(state.last()).deadline).toBe(T0 + 50 * MINUTE)
-  const live = clock.waits.filter(wait => !wait.signal.aborted)
+  expect(await band($)).toBe(`embers  warm  handoff at ${hhmm(T0 + 50 * MINUTE)}`)
+  const live = clock.waits.filter(wait => wait.isLive())
   expect(live.map(wait => wait.due)).toEqual([T0 + 50 * MINUTE])
   clock.now = T0 + 50 * MINUTE
   for (const wait of live) wait.fire()
