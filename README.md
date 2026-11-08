@@ -5,8 +5,11 @@ Claude's prompt cache lapses after a quiet hour (five minutes on some plans), an
 ## Install
 
 ```
+git clone https://github.com/ayagmar/embers ~/projects/embers
 claude --plugin-dir ~/projects/embers/embers
 ```
+
+`--plugin-dir` loads it for that one session. To load it in every session, set `CLAUDE_CODE_PLUGIN_DIRS` to `~/projects/embers/embers` in your shell or in the `env` block of `~/.claude/settings.json`.
 
 ## What you see
 
