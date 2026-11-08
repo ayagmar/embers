@@ -10,15 +10,16 @@ Updated 2026-11-08.
 
 - Fix round on `feat/mod` (`briefs/04-status.md`, head `eb0eb35`): all 12 review findings fixed one commit each, 17 tests, live run clean; one more bug found live and fixed (`/clear` starts `$.state` over). Compaction inside the submit hook proven refused by a probe plugin under `docs/probes/`.
 
+- Re-check (`briefs/05-recheck-report.md`): MERGE; the three minor regressions and two follow-ups fixed (18 tests). PR #1 merged to `main` with a merge commit on 2026-11-08. Worktree and panes closed.
+
 ## In flight
 
-- Re-check round with the same reviewer (`briefs/05-recheck.md`), report to `briefs/05-recheck-report.md`.
+- Nothing.
 
 ## Next
 
-1. Act on the re-check: fix blockers, then merge. Two re-check rounds at most.
-2. Merge `feat/mod` into `main` (no squash), then try the mod in a real session with default settings.
-3. README: usage, options table, what the band and the ask look like. Add an icon if the mod is ever published.
+1. Run the mod in a real session with default settings for a few days: `claude --plugin-dir ~/projects/embers/embers`. Watch the fork toasts for `cache_creation_input_tokens` after a long agentic turn.
+2. README: usage, options table, what the band and the ask look like. Add an icon if the mod is ever published.
 
 ## Decisions taken
 
@@ -28,6 +29,6 @@ Updated 2026-11-08.
 
 ## Open
 
-- Open points from `briefs/04-status.md`: first-fork cache writes of ~7.6k tokens unexplained; handoff log line cut at 2,000 characters; size estimate reads oddly on small sessions; manifest `author` and icon.
+- The fork's uncached tail is the last turn (explained in `briefs/05-recheck-report.md`); measure one fork after a multi-step turn before stating the cost in the README. Manifest `author` and icon are publishing metadata, left for the owner.
 - Whether the org plugin bypass of `classic.*` hooks also applies to `classic.PostModelSwitch` (assumed yes; the mod no longer depends on it).
 - Publishing: not planned until the mod has run for a few days with default settings.
