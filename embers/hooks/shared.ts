@@ -9,13 +9,17 @@ export const SLACK_MS = 30_000
 /** The TTLs the API offers, in minutes. */
 export const KNOWN_TTLS = [5, 60]
 
-export const HANDOFF_PROMPT = [
+const HANDOFF_PROMPT = [
   'You have no tools in this reply. Answer straight away, without deliberating.',
   'Write a handoff for this conversation so that it can continue from the handoff alone, without the transcript:',
   'the goal, the decisions made and why, the state of the work (files touched, what is done, what is not),',
   'open questions, and the exact next step. Be specific: names, paths, commands, figures.',
   'Plain text, no preamble.',
 ].join(' ')
+
+/** The handoff request; the person's own instructions, when set, are its last sentence. */
+export const handoffPrompt = (instructions: string): string =>
+  instructions.trim() === '' ? HANDOFF_PROMPT : `${HANDOFF_PROMPT} ${instructions.trim()}`
 
 export type ColdChoice = 'swap' | 'send' | 'fresh'
 export const COLD_LABELS: Record<ColdChoice, string> = {
@@ -41,6 +45,7 @@ export type Config = {
   coldMode: ColdMode
   offerOnStart: boolean
   showBand: boolean
+  handoffInstructions: string
 }
 
 export function readConfig(options: PluginOptions): Config {
@@ -54,6 +59,8 @@ export function readConfig(options: PluginOptions): Config {
     if (typeof value !== 'boolean') throw new Error(`embers: ${key} is not a boolean`)
     return value
   }
+  const instructions = options.handoffInstructions
+  if (typeof instructions !== 'string') throw new Error('embers: handoffInstructions is not a string')
   const mode = options.coldMode
   if (mode !== 'ask' && mode !== 'swap' && mode !== 'send' && mode !== 'off') {
     throw new Error('embers: coldMode is not ask, swap, send or off')
@@ -66,6 +73,7 @@ export function readConfig(options: PluginOptions): Config {
     coldMode: mode,
     offerOnStart: bool('offerOnStart'),
     showBand: bool('showBand'),
+    handoffInstructions: instructions,
   }
 }
 

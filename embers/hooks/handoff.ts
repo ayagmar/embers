@@ -23,7 +23,7 @@ import {
   dateTime,
   fixedTokens,
   forkFigures,
-  HANDOFF_PROMPT,
+  handoffPrompt,
   handoffTokens,
   isWarmRead,
   KNOWN_TTLS,
@@ -103,7 +103,7 @@ export async function writeHandoff($: EngineInterface, config: Config): Promise<
   const branch = await currentBranch($)
   await apply($, forkStarted)
 
-  const reply = await $.model.fork({ prompt: HANDOFF_PROMPT })
+  const reply = await $.model.fork({ prompt: handoffPrompt(config.handoffInstructions) })
   const now = await $.clock.now()
   if (!reply.isAnswered) {
     await apply($, forkFailed, reply.reason === 'nothing-to-fork' ? undefined : { at: now, usage: reply.usage })

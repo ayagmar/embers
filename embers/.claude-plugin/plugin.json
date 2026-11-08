@@ -41,6 +41,12 @@
       "description": "Offer the last handoff of this root and branch when a session starts.",
       "default": true
     },
+    "handoffInstructions": {
+      "type": "string",
+      "title": "Handoff instructions",
+      "description": "Added to the handoff prompt as its last sentence, such as what to keep or the language to write in. Empty adds nothing.",
+      "default": ""
+    },
     "showBand": {
       "type": "boolean",
       "title": "Show band",
