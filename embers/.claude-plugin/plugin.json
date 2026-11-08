@@ -2,5 +2,50 @@
   "name": "embers",
   "version": "0.1.0",
   "description": "Keeps your Claude Code context warm: writes a handoff before the prompt cache goes cold, swaps to it when you come back.",
-  "types": "./types/index.d.ts"
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "ttlMinutes": {
+      "type": "number",
+      "title": "Cache TTL (minutes)",
+      "description": "Assumed prompt-cache lifetime; an engine-reported or observed TTL overrides it.",
+      "default": 60
+    },
+    "marginMinutes": {
+      "type": "number",
+      "title": "Handoff margin (minutes)",
+      "description": "How long before the TTL the handoff is written.",
+      "default": 5
+    },
+    "minContextTokens": {
+      "type": "number",
+      "title": "Minimum context (tokens)",
+      "description": "Below this context size embers does nothing.",
+      "default": 40000
+    },
+    "minSavingTokens": {
+      "type": "number",
+      "title": "Minimum saving (tokens)",
+      "description": "A swap must shrink the prefix by at least this many tokens.",
+      "default": 20000
+    },
+    "coldMode": {
+      "type": "string",
+      "title": "Cold prompt",
+      "description": "On a cold prompt: ask, swap without asking when a handoff matches, send, or off.",
+      "options": ["ask", "swap", "send", "off"],
+      "default": "ask"
+    },
+    "offerOnStart": {
+      "type": "boolean",
+      "title": "Offer handoff on start",
+      "description": "Offer the last handoff of this root and branch when a session starts.",
+      "default": true
+    },
+    "showBand": {
+      "type": "boolean",
+      "title": "Show band",
+      "description": "Draw the embers band above the prompt.",
+      "default": true
+    }
+  }
 }
