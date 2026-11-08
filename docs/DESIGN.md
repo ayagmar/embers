@@ -78,7 +78,7 @@ The effort level is not kept: no API reads it while idle. `/effort` disarms the 
 
 Retention: a handoff is deleted when swapped to, loaded, or overtaken by a later main-loop turn of its own session. While a root holds more than 10 handoffs, the oldest that are not the newest of their branch and are older than twice the TTL are dropped until it holds 10. A younger one may belong to a session still open in the same checkout, and an older one to a session resumed later. Records older than 14 days are dropped. Both run on session start and after each handoff is written. Every read validates `v` and shape; a record that fails is treated as absent and deleted.
 
-Session id, root and turns are captured before every await and bound to the record; `/clear` mid-fork must not store the old conversation under the new id.
+Session id, root and turns are captured before every await and bound to the record; `/clear` mid-fork must not store the old conversation under the new id. After the fork the phase is read through `update`: every `$.state.get` of one dispatch reads one moment (`d.ts:3558`), so a plain read after that wait can be stale.
 
 Resume: `session.start`, when no cache is known, reads the session's own handoff and, when its turn count still matches, seeds a cache touched at `writtenAt` with the record's `contextTokens`. A matching handoff is the only case where a swap is possible. `context.tokens` is absent until the first response of a resumed process, so the cold path falls back to the seeded `contextTokens`. Classic hooks are not used for this: an organization plugin can bypass a mod's `classic.*` hooks.
 

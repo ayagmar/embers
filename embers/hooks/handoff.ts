@@ -48,6 +48,7 @@ import {
   lapseObserved,
   offerMade,
   prefixReplaced,
+  readCurrent,
   readRun,
 } from './state'
 
@@ -111,7 +112,7 @@ export async function writeHandoff($: EngineInterface, config: Config): Promise<
       ? { kind: 'none', reason: reply.reason }
       : { kind: 'none', reason: reply.reason, usage: reply.usage }
   }
-  const [sessionAfter, turnsAfter, s] = await Promise.all([$.session.id(), $.session.turns(), readRun($)])
+  const [sessionAfter, turnsAfter, s] = await Promise.all([$.session.id(), $.session.turns(), readCurrent($)])
   if (sessionAfter !== sessionId || turnsAfter !== turns || s.phase.kind !== 'writing') {
     // A turn or a /clear that moved on set its own phase; only a stale `writing` is ours.
     await apply($, forkFailed, { at: now, usage: reply.usage })

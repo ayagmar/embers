@@ -21,6 +21,14 @@ export function apply<A extends unknown[]>(
   return update($, run, r => transition(r, ...input))
 }
 
+/**
+ * The state as it stands now. Every read of one dispatch holds one moment, so a
+ * read after a wait can be stale; `update` alone goes past it, on a version miss.
+ */
+export function readCurrent($: EngineInterface): Promise<EmbersRun> {
+  return apply($, r => r)
+}
+
 /** `/embers off` holds for the process: `$.state` survives a reload, the variable a `/clear`. */
 export const isOff = (r: EmbersRun): boolean => r.isOff || inProcess.isOff
 
