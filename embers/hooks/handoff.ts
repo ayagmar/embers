@@ -184,6 +184,7 @@ async function swap(
   tokens: number,
   fixed: number,
 ): Promise<void> {
+  const oldId = await $.session.id()
   await $.command.run({ command: 'clear' })
   await cleared($)
   const appended = await $.session.append({
@@ -194,8 +195,10 @@ async function swap(
     return
   }
   await $.store.delete(handoffKey(record.root, record.sessionId))
+  // What the model now holds, for the person to read; the model never reads a log line.
+  $.ui.log(compose(record))
   $.ui.toast(
-    `embers: swapped ${k(tokens)} → ~${k(fixed + handoffTokens(record))} tokens (handoff ${k(handoffTokens(record))}); send your prompt from the box`,
+    `embers: swapped ${k(tokens)} → ~${k(fixed + handoffTokens(record))} tokens (handoff ${k(handoffTokens(record))}); send your prompt from the box. Old conversation: claude --resume ${oldId}`,
   )
 }
 

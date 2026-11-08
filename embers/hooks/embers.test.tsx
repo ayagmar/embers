@@ -35,6 +35,8 @@ type World = {
   asks: { question: string; labels: string[] }[]
   compactions: SessionCompactInput[]
   toasts: string[]
+  /** Lines `$.ui.log` put in the transcript. */
+  logged: string[]
   filled: string[]
   commands: string[]
 }
@@ -51,6 +53,7 @@ function engine(on: On, overrides: Partial<World> = {}): World {
     asks: [],
     compactions: [],
     toasts: [],
+    logged: [],
     filled: [],
     commands: [],
     ...overrides,
@@ -108,7 +111,10 @@ function engine(on: On, overrides: Partial<World> = {}): World {
     world.toasts.push(e.text)
     return { value: undefined }
   })
-  on('ui.log', () => ({ value: undefined }))
+  on('ui.log', (_, e) => {
+    if (e.to === 'transcript') world.logged.push(e.text)
+    return { value: undefined }
+  })
   on('tool.call', { tool: 'AskUserQuestion' }, (_, e) => {
     const asked = e.questions[0]
     if (asked === undefined) throw new Error('no question')
@@ -270,6 +276,9 @@ test('a cold prompt with a matching handoff swaps to it without a model call', a
   // The engine puts a dropped prompt back in the box; filling it too doubles it.
   expect(world.filled).toEqual([])
   expect(store.has(KEY)).toBe(false)
+  // The old conversation stays reachable, and the person can read what the model now holds.
+  expect(world.toasts.at(-1)).toContain(`claude --resume ${SESSION}`)
+  expect(world.logged.some(line => line.includes('HANDOFF: release v2 is next'))).toBe(true)
   // The prompt sent from the box enters on the short prefix, unasked.
   await $.prompt.submit({ text: 'go on', ...typed })
   expect(world.asks).toHaveLength(1)
