@@ -146,10 +146,19 @@ export const register: Register = (on, options) => {
       return { text: 'embers is on; the next turn to end arms it.' }
     }
     if (arg !== '') return { text: 'Usage: /embers [status|off|on]' }
-    const [s, now, ttl, usage] = await Promise.all([readRun($), $.clock.now(), ttlMs($, config), $.session.usage()])
+    const [s, now, ttl, usage, model] = await Promise.all([
+      readRun($),
+      $.clock.now(),
+      ttlMs($, config),
+      $.session.usage(),
+      $.session.model(),
+    ])
     if (s.phase.kind === 'writing')
       return { text: 'embers: a handoff is being written; run /embers again when it is done.' }
-    if (s.phase.cache === undefined || now - s.phase.cache.touchedAt >= ttl) {
+    const { cache } = s.phase
+    // After `/model` the prefix is billed afresh; a touch seeded from a handoff names no model.
+    const isNewModel = cache?.model !== undefined && cache.model !== model
+    if (cache === undefined || now - cache.touchedAt >= ttl || isNewModel) {
       const tokens = usage.context.tokens
       const size = tokens === undefined ? 'the whole conversation' : `${k(tokens)} tokens`
       const answer = await $.ui

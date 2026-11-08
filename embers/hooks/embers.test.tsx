@@ -642,6 +642,30 @@ test('/embers on a cold cache asks before a fork that rereads the whole context'
   expect(written.text).toStartWith('Handoff written')
 })
 
+test('/embers after a model change asks before forking; a resumed touch that names no model does not', async ($, on) => {
+  const world = engine(on, { answer: 'Cancel', surfaces: [] })
+  const clock = mock.clock(on, { now: T0 })
+  memoryStore(on, { [KEY]: handoff({}) })
+  const embers = {
+    command: 'embers',
+    args: '',
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: false, columns: 120 },
+  } as const
+
+  await $.session.start({ ...start, isInteractive: false })
+  await clock.set(T0 + 10 * MINUTE)
+  expect((await $.command.run(embers)).text).toStartWith('Handoff written')
+  expect(world.asks).toEqual([])
+
+  await $.turn.complete(turnEnd)
+  world.model = 'claude-other'
+  await clock.set(T0 + 20 * MINUTE)
+  expect(await $.command.run(embers)).toEqual({ text: 'No handoff written.' })
+  expect(world.asks).toHaveLength(1)
+  expect(world.forks).toBe(1)
+})
+
 test(
   'a userConfig reload while armed re-arms the timer the reload lost, once',
   { options: { marginMinutes: 10 } },
