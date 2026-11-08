@@ -85,10 +85,11 @@ export async function listHandoffs($: EngineInterface, root: string): Promise<Ha
 
 /**
  * Drops invalid records, handoffs older than 14 days, and every handoff but
- * the newest per root and branch.
+ * the newest per root and branch once it is older than twice the TTL: a
+ * younger one may belong to another session still open in the same checkout.
  */
-export async function sweep($: EngineInterface, now: number): Promise<void> {
-  const newest = new Map<string, HandoffRecord>()
+export async function sweep($: EngineInterface, now: number, ttlMs: number): Promise<void> {
+  const groups = new Map<string, HandoffRecord[]>()
   for (const key of await $.store.keys()) {
     const record = await readRecord($, key)
     if (record === undefined || !('root' in record)) continue
@@ -97,14 +98,12 @@ export async function sweep($: EngineInterface, now: number): Promise<void> {
       continue
     }
     const group = `${record.root}\n${record.branch}`
-    const kept = newest.get(group)
-    if (kept === undefined) {
-      newest.set(group, record)
-    } else if (record.writtenAt > kept.writtenAt) {
-      await $.store.delete(handoffKey(kept.root, kept.sessionId))
-      newest.set(group, record)
-    } else {
-      await $.store.delete(key)
+    groups.set(group, [...(groups.get(group) ?? []), record])
+  }
+  for (const records of groups.values()) {
+    const [, ...older] = records.sort((a, b) => b.writtenAt - a.writtenAt)
+    for (const record of older) {
+      if (now - record.writtenAt > 2 * ttlMs) await $.store.delete(handoffKey(record.root, record.sessionId))
     }
   }
 }

@@ -65,7 +65,7 @@ The timer handle lives in a module variable. `session.start` (which fires on rel
 - `handoff:<root>:<sessionId>`: `{ v: 1, root, branch, sessionId, turns, writtenAt, contextTokens, text, lastAssistant }`. `lastAssistant` is the last assistant message's text, taken from `$.session.messages()` before the fork, because the fork's view ends at the last request and never sees the final reply. The swap appends it after the handoff.
 - `ttl:<model>`: `{ v: 1, observedMinutes, observedAt }`.
 
-Retention: a handoff is deleted when swapped to, loaded, or overtaken by a later main-loop turn of its own session. At most the newest handoff per root and branch is kept, and records older than 14 days are dropped on session start. Every read validates `v` and shape; a record that fails is treated as absent and deleted.
+Retention: a handoff is deleted when swapped to, loaded, or overtaken by a later main-loop turn of its own session. Per root and branch, an older handoff than the newest is dropped once it is older than twice the TTL; a younger one may belong to another session still open in the same checkout. Records older than 14 days are dropped. Both run on session start and after each handoff is written. Every read validates `v` and shape; a record that fails is treated as absent and deleted.
 
 Session id, root and turns are captured before every await and bound to the record; `/clear` mid-fork must not store the old conversation under the new id.
 

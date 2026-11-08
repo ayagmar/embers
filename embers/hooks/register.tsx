@@ -26,7 +26,7 @@ export const register: Register = (on, options) => {
       description: 'Write a handoff now; `status` lists handoffs and the TTL; `off` disables embers for this session',
       argumentHint: '[status|off]',
     })
-    const now = await $.clock.now()
+    const [now, ttl] = await Promise.all([$.clock.now(), ttlMs($, config)])
     // Fires on reload too: the state survived, the timer and any swap in flight did not.
     const s = await change($, r => ({
       ...r,
@@ -36,7 +36,7 @@ export const register: Register = (on, options) => {
     }))
     if (s.phase === 'armed' && s.deadline !== undefined) arm($, config, now, s.deadline)
     if (s.lastCacheTouch === undefined) await seedFromHandoff($)
-    await sweep($, now)
+    await sweep($, now, ttl)
     // Once per session, never under -p, and not into a resumed conversation,
     // which already holds its own context.
     if (config.offerOnStart && e.isInteractive && !s.startOffered && (await $.session.turns()) === 0) {

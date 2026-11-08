@@ -513,17 +513,22 @@ test('/compact typed by the person reaches core, even with marker-like instructi
   expect(world.compactions.map(e => e.instructions)).toEqual([`embers:${T0}`])
 })
 
-test('store retention drops bad and superseded records, keeping the newest per root and branch', async ($, on) => {
+test('store retention drops bad, expired and superseded records, but not another open session\'s handoff', async ($, on) => {
   engine(on)
   mock.clock(on, { now: T0 })
   const old = `handoff:${ROOT}:old`
   const newer = `handoff:${ROOT}:newer`
+  // Two terminals in one checkout: A's handoff is younger than twice the TTL.
+  const terminalA = `handoff:${ROOT}:terminal-a`
+  const terminalB = `handoff:${ROOT}:terminal-b`
   const other = `handoff:${ROOT}:other`
   const stale = `handoff:${ROOT}:stale`
   const wrong = `handoff:${ROOT}:wrong`
   const store = memoryStore(on, {
-    [old]: handoff({ sessionId: 'old', writtenAt: T0 - 120 * MINUTE }),
+    [old]: handoff({ sessionId: 'old', writtenAt: T0 - 180 * MINUTE }),
     [newer]: handoff({ sessionId: 'newer', writtenAt: T0 - 60 * MINUTE }),
+    [terminalA]: handoff({ sessionId: 'terminal-a', branch: 'two', writtenAt: T0 - 90 * MINUTE }),
+    [terminalB]: handoff({ sessionId: 'terminal-b', branch: 'two', writtenAt: T0 - 5 * MINUTE }),
     [other]: handoff({ sessionId: 'other', branch: 'feature', writtenAt: T0 - 180 * MINUTE }),
     [stale]: handoff({ sessionId: 'stale', branch: 'stale', writtenAt: T0 - 15 * 24 * 60 * MINUTE }),
     [wrong]: { ...handoff({ sessionId: 'wrong' }), v: 2 },
@@ -532,5 +537,5 @@ test('store retention drops bad and superseded records, keeping the newest per r
 
   await $.session.start({ ...start, isInteractive: false })
 
-  expect([...store.keys()].sort()).toEqual([newer, other].sort())
+  expect([...store.keys()].sort()).toEqual([newer, other, terminalA, terminalB].sort())
 })

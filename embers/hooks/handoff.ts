@@ -118,10 +118,10 @@ export async function writeHandoff($: EngineInterface, config: Config): Promise<
     text: reply.text,
     lastAssistant,
   }
-  await $.store.set(handoffKey(root, sessionId), record)
-  await sweep($, now)
-  const isWarm = isWarmRead(reply.usage)
   const ttl = await ttlMs($, config)
+  await $.store.set(handoffKey(root, sessionId), record)
+  await sweep($, now, ttl)
+  const isWarm = isWarmRead(reply.usage)
   await change($, r => {
     if (r.phase !== 'writing') return r
     const touch = isWarm ? now : r.lastCacheTouch
