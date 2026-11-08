@@ -83,13 +83,18 @@ export async function listHandoffs($: EngineInterface, root: string): Promise<Ha
   return found.sort((a, b) => b.writtenAt - a.writtenAt)
 }
 
+/** Below this many handoffs in a root, a superseded one is worth keeping for its own session's resume. */
+const ROOT_CAP = 10
+
 /**
- * Drops invalid records, handoffs older than 14 days, and every handoff but
- * the newest per root and branch once it is older than twice the TTL: a
- * younger one may belong to another session still open in the same checkout.
+ * Drops invalid records, handoffs older than 14 days, and, while a root holds
+ * more than `ROOT_CAP`, handoffs that are not the newest of their branch and
+ * are older than twice the TTL. A younger one may belong to a session still
+ * open in the same checkout, and an older one to a session resumed later.
  */
 export async function sweep($: EngineInterface, now: number, ttlMs: number): Promise<void> {
   const groups = new Map<string, HandoffRecord[]>()
+  const perRoot = new Map<string, number>()
   for (const key of await $.store.keys()) {
     const record = await readRecord($, key)
     if (record === undefined || !('root' in record)) continue
@@ -99,12 +104,17 @@ export async function sweep($: EngineInterface, now: number, ttlMs: number): Pro
     }
     const group = `${record.root}\n${record.branch}`
     groups.set(group, [...(groups.get(group) ?? []), record])
+    perRoot.set(record.root, (perRoot.get(record.root) ?? 0) + 1)
   }
-  for (const records of groups.values()) {
-    const [, ...older] = records.sort((a, b) => b.writtenAt - a.writtenAt)
-    for (const record of older) {
-      if (now - record.writtenAt > 2 * ttlMs) await $.store.delete(handoffKey(record.root, record.sessionId))
-    }
+  const superseded = [...groups.values()]
+    .flatMap(records => records.sort((a, b) => b.writtenAt - a.writtenAt).slice(1))
+    .filter(record => now - record.writtenAt > 2 * ttlMs)
+    .sort((a, b) => a.writtenAt - b.writtenAt)
+  for (const record of superseded) {
+    const count = perRoot.get(record.root) ?? 0
+    if (count <= ROOT_CAP) continue
+    await $.store.delete(handoffKey(record.root, record.sessionId))
+    perRoot.set(record.root, count - 1)
   }
 }
 

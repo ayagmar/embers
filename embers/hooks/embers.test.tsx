@@ -627,7 +627,7 @@ test('/compact typed by the person reaches core, even with marker-like instructi
   expect(world.compactions.map(e => e.instructions)).toEqual([`embers:${T0}`])
 })
 
-test('store retention drops bad, expired and superseded records, but not another open session\'s handoff', async ($, on) => {
+test('store retention drops bad and expired records, and keeps superseded ones while the root is under its cap', async ($, on) => {
   engine(on)
   mock.clock(on, { now: T0 })
   const old = `handoff:${ROOT}:old`
@@ -651,5 +651,5 @@ test('store retention drops bad, expired and superseded records, but not another
 
   await $.session.start({ ...start, isInteractive: false })
 
-  expect([...store.keys()].sort()).toEqual([newer, other, terminalA, terminalB].sort())
+  expect([...store.keys()].sort()).toEqual([old, newer, other, terminalA, terminalB].sort())
 })
