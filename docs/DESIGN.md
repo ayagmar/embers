@@ -17,10 +17,11 @@ Two things make it worse:
 
 2. **Cold prompt.** On a person's `prompt.submit` on the main loop, embers compares the time since the last cache touch (the last main-loop turn end, or a later fork that read the cache) with the TTL.
    - Under the TTL: the prompt passes through. Nothing drawn, nothing logged.
-   - Over the TTL: embers asks, inside the hook with `$.ui.ask`, and then calls `next(e)` with the prompt intact. The choices:
-     - **swap** (first, offered only when a handoff is on file and matches the session id and turn count): compact to the handoff, then let the prompt enter on the short prefix.
-     - **send**: the prompt enters cold, the cache rewarms on that request.
-     - **fresh**: `/clear`, then the prompt enters first. The hook drops the prompt, fills it back into the prompt box, and runs `/clear` from `$.clock.after(0, …)` because `$.command.run` rejects inside a hook the turn waits on (`d.ts:3236`). Attachments must be pasted again; the ask says so.
+   - Over the TTL: embers asks, inside the hook with `$.ui.ask`. The choices:
+     - **swap** (first, offered only when a handoff is on file and matches the session id and turn count): the hook drops the prompt; from `$.clock.after(0, …)` embers runs `/clear`, appends the handoff and the last reply as the new conversation's first row with `$.session.append`, and deletes the handoff. The person sends the prompt again from the box, and it enters on the short prefix. No model call.
+     - **send**: `next(e)` with the prompt intact; it enters cold and the cache rewarms on that request.
+     - **fresh**: the hook drops the prompt and runs `/clear` from `$.clock.after(0, …)`; the person sends it again.
+   - Swap and fresh drop the prompt because the host refuses both a compaction and a command under the turn a `prompt.submit` hook holds (`d.ts:3236`). A compaction from the timer instead runs past the calling plugin's own `session.compact` hook, so core would summarize the cold prefix with a model call. `docs/probes/compact-in-prompt-submit` is a kit test that shows both. The engine puts a dropped prompt back in the box by itself; attachments must be pasted again, and the drop reason says so. Until the swap or fresh start ends, a prompt sent again is dropped with `embers: still swapping; send again when it says done`.
    - Without a matching handoff the ask offers only send and fresh. Writing a handoff at that point would itself reread the whole cold prefix P at the cache-write price, the same 1.25 × P that sending pays, and the swap would then write the short prefix S at 1.25 × S on top. Sending leaves P warm, read at 0.1 × P per later request. For P = 100k and S = 25k the swap adds about 31k token-equivalents now to save 7.5k per later request: it pays back only after four or more.
    - The question states each choice's size: `The prompt cache is cold (65m idle). Sending rewrites 100k tokens; swapping to the 12:55 handoff writes ~25k; a fresh session writes ~20k (paste attachments again). What now?` Without a handoff the swap clause is left out.
    - `coldMode` `swap` skips the ask when a matching handoff is on file. `send` and `off` never ask. If the ask rejects (dismissed, non-interactive), the prompt is sent.
@@ -43,7 +44,7 @@ Two things make it worse:
 
 - Act on the main loop only: every hook returns `next(e)` first when `e.agentId !== undefined`.
 - At `prompt.submit`, act only when `!e.command`, `!e.turnId`, `!e.isMeta`, and `e.origin` is absent or its kind is `composer` or `bridge`. Slash commands, queued prompts, task notifications, `/loop`, peers and plugins pass through untouched.
-- The `session.compact` hook answers only when `trigger === 'plugin'`, `agentId === undefined`, and `instructions` is the marker `embers:<handoffId>`. Every other compaction, including `/compact` and auto-compaction, gets `next(e)`.
+- The `session.compact` hook only watches: every compaction gets `next(e)`, and a main-loop one that stands resets the cache touch, since the next request writes a new prefix.
 
 ## State
 
@@ -60,7 +61,7 @@ The timer handle lives in a module variable. `session.start` (which fires on rel
 
 `$.store` (across sessions), one key per record, no index:
 
-- `handoff:<root>:<sessionId>`: `{ v: 1, root, branch, sessionId, turns, writtenAt, contextTokens, text, lastAssistant }`. `lastAssistant` is the last assistant message's text, taken from `$.session.messages()` before the fork, because the fork's view ends at the last request and never sees the final reply. The compaction includes it after the handoff.
+- `handoff:<root>:<sessionId>`: `{ v: 1, root, branch, sessionId, turns, writtenAt, contextTokens, text, lastAssistant }`. `lastAssistant` is the last assistant message's text, taken from `$.session.messages()` before the fork, because the fork's view ends at the last request and never sees the final reply. The swap appends it after the handoff.
 - `ttl:<model>`: `{ v: 1, observedMinutes, observedAt }`.
 
 Retention: a handoff is deleted when swapped to, loaded, or overtaken by a later main-loop turn of its own session. At most the newest handoff per root and branch is kept, and records older than 14 days are dropped on session start. Every read validates `v` and shape; a record that fails is treated as absent and deleted.

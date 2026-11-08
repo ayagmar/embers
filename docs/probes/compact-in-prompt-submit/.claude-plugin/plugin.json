@@ -1,0 +1,1 @@
+{ "name": "compact-probe", "version": "0.1.0", "description": "Shows where a plugin may call $.session.compact; the evidence for embers' /clear swap" }
