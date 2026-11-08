@@ -297,6 +297,19 @@ test('a timer that fires after the cache lapsed (slept laptop) forks nothing', a
   expect(asRun(state.last()).phase).toBe('idle')
 })
 
+test('a 5m TTL forks the handoff near its end, not one minute after every turn', async ($, on) => {
+  const world = engine(on)
+  const clock = mock.clock(on, { now: T0 })
+  memoryStore(on, { 'ttl:claude-test': { v: 1, observedMinutes: 5, observedAt: T0 - MINUTE } })
+
+  await $.session.start(start)
+  await $.turn.complete(turnEnd)
+  await clock.advance(3 * MINUTE + 59_000)
+  expect(world.forks).toBe(0)
+  await clock.advance(1000)
+  expect(world.forks).toBe(1)
+})
+
 test('a userConfig reload while armed keeps the deadline and arms one timer', { options: { marginMinutes: 10 } }, async ($, on) => {
   const world = engine(on)
   const state = stateLog(on)

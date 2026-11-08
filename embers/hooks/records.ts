@@ -113,9 +113,9 @@ export async function ttlMinutes($: EngineInterface, configured: number): Promis
   return record?.observedMinutes ?? configured
 }
 
-/** The margin before the TTL, kept inside a short TTL. */
+/** The margin before the TTL: the configured one, cut to a fifth of a short TTL (but not under a minute). */
 export const marginFor = (ttl: number, margin: number): number =>
-  Math.min(margin, Math.max(ttl - 1, ttl / 2))
+  Math.min(margin, Math.max(1, ttl / 5))
 
 /** The checked-out branch, or '' outside git. */
 export async function currentBranch($: EngineInterface): Promise<string> {
