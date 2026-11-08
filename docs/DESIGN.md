@@ -40,7 +40,7 @@ Two things make it worse:
 - The fork's uncached tail is the last turn, not a few hundred tokens: the prompt plus every tool result and step of that turn is written to the cache at 1.25 times the input price, in an entry the main thread does not reuse. In the live run, a fork after a conversation's first turn wrote about 7.6k tokens and a fork after its second turn wrote 3. A last turn with 30k of tool output would write about 30k; that has not been measured. It stays far cheaper than rewriting the whole prefix cold.
 - The fork is skipped when the effort level changed while idle, when a turn is running, when the session is not interactive, and when the wall clock says the cache has already lapsed (a laptop that slept through the deadline). A skipped fork writes nothing.
 - `/embers` on a cold cache says so and asks before forking.
-- Every fork and swap toasts its `cache_read_input_tokens`, `output_tokens` and, for a swap, the tokens before and after, so the cost is visible.
+- Every fork and swap toasts what it cost, so the cost is visible: a fork in words, `read 26k from cache, wrote 7.6k, 937 out`, with `(cold)` when the read was cold; a swap as the tokens before and after.
 
 ## Scope filters
 
@@ -52,21 +52,24 @@ Two things make it worse:
 
 `$.state` (session, JSON only; survives a hot reload, starts over under the new session id after a `/clear`):
 
-- `phase`: `idle` | `armed` | `writing` | `ready`
-- `lastCacheTouch`: epoch ms of the last main-loop turn end or warm fork
-- `modelAtTouch`: the model at that turn end; the timer and the TTL observation act only while the model is unchanged
-- `contextTokens`: from the last main-loop `turn.complete`, or absent
-- `deadline`: epoch ms the timer should fire, while `armed`
-- `warmUntil`, `handoffAt`: for the band
+- `phase`, a union tagged by `kind`, carrying what is valid in it:
+  - `idle`, with a `cache` when one is known
+  - `armed`, with a `cache` and the `deadline` the timer should fire at
+  - `writing`, with a `cache` unless a manual `/embers` started with none known
+  - `ready`, with a `cache` and the `handoffAt` of the handoff on file
+- `cache`, inside the phase: `touchedAt` (epoch ms of the last main-loop turn end or warm fork), `model` (the model at that turn end; the timer and the TTL observation act only while it is unchanged; absent when the touch came from a handoff), `contextTokens` (from the last main-loop `turn.complete`, or absent), `warmUntil` (`touchedAt` plus the TTL in force)
 - `isOff`: `/embers off`
 - `startOffered`: whether the start offer was shown this session
 - `lapse`: a held or stored TTL observation (see "TTL observation")
+- `lastFork`: when the last fork that reached the API ended, and its usage, for `/embers status`
 
-Module variables hold what must outlive a `/clear` and may start over on a reload: the timer handle, whether a swap is running, and a mirror of `isOff`, merged with the state on every read and write so `/embers off` survives both. A `/clear` starts `$.state` over and no `session.start` follows it. Whether the session is interactive is not kept: `turn.complete` reads `$.session.surfaces()`, empty under `-p`.
+`hooks/state.ts` owns this value. Each change is a named pure function applied through `apply($, transition, input)`: `turnEnded`, `promptStarted`, `forkStarted`, `forkSkipped`, `forkFailed`, `forkWritten`, `cacheTouched`, `prefixReplaced` (a compaction, a model switch, `/effort`, or a swap or fresh start), `cleared`, and the small ones for the offer, the lapse and the off switch. A value stored under an older shape reads as the initial state.
 
-The effort level is not kept: no API reads it while idle. `/effort` disarms the timer and clears the cache touch instead.
+`hooks/process.ts` holds what must outlive a `/clear` and may start over on a reload: the timer handle, whether a swap is running, and `isOff`. `/embers off` holds for the process through that variable and `$.state`: `isOff(run)` reads either, and they are written together only by `/embers off` and `/embers on`, and copied from state to variable in `session.start` after a reload. A `/clear` starts `$.state` over and no `session.start` follows it. Whether the session is interactive is not kept: `turn.complete` reads `$.session.surfaces()`, empty under `-p`.
 
-`session.start` (which fires on reload too) re-arms from `deadline` when `phase` is `armed` and the deadline is still ahead. The timer is cancelled at main-loop `prompt.submit` and `turn.start`. When it fires, it re-reads `$.state` and the clock before forking.
+The effort level is not kept: no API reads it while idle. `/effort` disarms the timer and forgets the cache, as a compaction does; a fork still running then is reported as moved on.
+
+`session.start` (which fires on reload too) re-arms from the `deadline` when the phase is `armed`, firing at once if it has passed. The timer is cancelled at main-loop `prompt.submit` and `turn.start`. When it fires, it re-reads `$.state` and the clock before forking.
 
 `$.store` (across sessions), one key per record, no index:
 
@@ -77,7 +80,7 @@ Retention: a handoff is deleted when swapped to, loaded, or overtaken by a later
 
 Session id, root and turns are captured before every await and bound to the record; `/clear` mid-fork must not store the old conversation under the new id.
 
-Resume: `session.start`, when `lastCacheTouch` is unset, reads the session's own handoff and, when its turn count still matches, seeds `lastCacheTouch` from `writtenAt` and `contextTokens` from the record. A matching handoff is the only case where a swap is possible. `context.tokens` is absent until the first response of a resumed process, so the cold path falls back to the seeded `contextTokens`. Classic hooks are not used for this: an organization plugin can bypass a mod's `classic.*` hooks.
+Resume: `session.start`, when no cache is known, reads the session's own handoff and, when its turn count still matches, seeds a cache touched at `writtenAt` with the record's `contextTokens`. A matching handoff is the only case where a swap is possible. `context.tokens` is absent until the first response of a resumed process, so the cold path falls back to the seeded `contextTokens`. Classic hooks are not used for this: an organization plugin can bypass a mod's `classic.*` hooks.
 
 ## Configuration (`userConfig`)
 
@@ -90,6 +93,7 @@ Resume: `session.start`, when `lastCacheTouch` is unset, reads the session's own
 | `coldMode` | `ask` / `swap` / `send` / `off` | `ask` | see "Cold prompt" |
 | `offerOnStart` | boolean | true | offer the last handoff of this root and branch on session start |
 | `showBand` | boolean | true | draw the band above the prompt |
+| `handoffInstructions` | string | empty | added to the handoff prompt as its last sentence when set |
 
 A `userConfig` change reloads the mod; the state above survives it.
 
@@ -102,7 +106,7 @@ A `userConfig` change reloads the mod; the state above survives it.
   - ttl stored: `embers  cache lapsed after 5m  margin now 1m`
 - **Ask** (`$.ui.ask`) on a cold prompt, with the options above and one line of cost: the context size, what sending cold costs, what the swap costs.
 - **Toast** once per handoff, swap or skipped fork, with the token figures.
-- **Commands**: `/embers` writes a handoff now (asks first if the cache is cold); `/embers status` lists this root's handoffs and the observed TTL; `/embers off` disables for this session.
+- **Commands**: `/embers` writes a handoff now (asks first if the cache is cold); `/embers status` says whether embers is on, the cache (warm until a time, cold since a time, or unknown), the phase in words, the last fork's figures and time, this root's handoffs and the TTL in force; `/embers off` disables it for this process and `/embers on` undoes that.
 - **Status line**: nothing.
 
 ## Not in scope
