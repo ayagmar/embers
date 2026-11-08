@@ -402,6 +402,31 @@ test('/embers off holds after a /clear, which starts the state over', async ($, 
   expect(world.forks).toBe(0)
 })
 
+test('/embers on undoes /embers off, even after a /clear started the state over', async ($, on) => {
+  const world = engine(on)
+  const clock = mock.clock(on, { now: T0 })
+  memoryStore(on)
+  const startOver = stateStartsOver(on)
+  const embers = (args: 'on' | 'off') =>
+    ({
+      command: 'embers',
+      args,
+      origin: { kind: 'composer' },
+      presentation: { isFullscreen: false, columns: 120 },
+    }) as const
+
+  await $.session.start(start)
+  await $.command.run(embers('off'))
+  await $.session.end({ reason: 'clear', sessionId: SESSION, resume: { id: SESSION } })
+  startOver()
+  await $.command.run(embers('on'))
+  await $.turn.complete(turnEnd)
+
+  expect(await band($)).toBe(`embers  warm  handoff at ${hhmm(T0 + 55 * MINUTE)}`)
+  await clock.advance(55 * MINUTE)
+  expect(world.forks).toBe(1)
+})
+
 test('the start offer shows only at a fresh interactive start, and not again after Skip', async ($, on) => {
   const world = engine(on, { answer: 'Skip', turns: 0 })
   const clock = mock.clock(on, { now: T0 })

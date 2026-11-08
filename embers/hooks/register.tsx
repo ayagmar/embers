@@ -14,7 +14,17 @@ import {
 import { disarm, inProcess } from './process'
 import { handoffKey, marginFor, sweep, ttlKey } from './records'
 import { bandLine, CANCEL, forkFigures, isPersonPrompt, k, MINUTE, readConfig, WRITE } from './shared'
-import { apply, forkFailed, isOff, prefixReplaced, promptStarted, readRun, switchedOff, turnEnded } from './state'
+import {
+  apply,
+  forkFailed,
+  isOff,
+  prefixReplaced,
+  promptStarted,
+  readRun,
+  switchedOff,
+  switchedOn,
+  turnEnded,
+} from './state'
 
 export const register: Register = (on, options) => {
   const config = readConfig(options)
@@ -22,12 +32,13 @@ export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'embers',
-      description: 'Write a handoff now; `status` lists handoffs and the TTL; `off` disables embers for this session',
-      argumentHint: '[status|off]',
+      description: 'Write a handoff now; `status` shows where embers stands; `off` and `on` switch it for this process',
+      argumentHint: '[status|off|on]',
     })
     const [now, ttl] = await Promise.all([$.clock.now(), ttlMs($, config)])
     // Fires on reload too: the state survived, the timer and any swap in flight did not.
     const s = await apply($, forkFailed)
+    if (s.isOff) inProcess.isOff = true
     if (s.phase.kind === 'armed') arm($, config, now, s.phase.deadline)
     if (s.phase.cache === undefined) await seedFromHandoff($, ttl)
     await sweep($, now, ttl)
@@ -123,11 +134,17 @@ export const register: Register = (on, options) => {
     const arg = e.args.trim()
     if (arg === 'status') return { text: await status($, config) }
     if (arg === 'off') {
+      inProcess.isOff = true
       disarm()
       await apply($, switchedOff)
-      return { text: 'embers is off for this session.' }
+      return { text: 'embers is off; /embers on turns it back on.' }
     }
-    if (arg !== '') return { text: 'Usage: /embers [status|off]' }
+    if (arg === 'on') {
+      inProcess.isOff = false
+      await apply($, switchedOn)
+      return { text: 'embers is on; the next turn to end arms it.' }
+    }
+    if (arg !== '') return { text: 'Usage: /embers [status|off|on]' }
     const [s, now, ttl, usage] = await Promise.all([readRun($), $.clock.now(), ttlMs($, config), $.session.usage()])
     if (s.phase.kind === 'writing')
       return { text: 'embers: a handoff is being written; run /embers again when it is done.' }

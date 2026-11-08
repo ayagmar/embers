@@ -7,14 +7,9 @@ import { inProcess } from './process'
 export const INITIAL: EmbersRun = { phase: { kind: 'idle' }, isOff: false, startOffered: false }
 const run = atom({ plugin: 'embers', key: 'run' } as const, INITIAL, { shape: 'run-2' })
 
-function withOff(r: EmbersRun): EmbersRun {
-  if (r.isOff) inProcess.isOff = true
-  return inProcess.isOff && !r.isOff ? { ...r, isOff: true } : r
-}
-
 /** The session's state; a read while drawing subscribes the drawing. */
-export async function readRun($: EngineInterface): Promise<EmbersRun> {
-  return withOff(await read($, run))
+export function readRun($: EngineInterface): Promise<EmbersRun> {
+  return read($, run)
 }
 
 /** The one writer of the state: runs a transition below over the current value. */
@@ -23,10 +18,11 @@ export function apply<A extends unknown[]>(
   transition: (r: EmbersRun, ...input: A) => EmbersRun,
   ...input: A
 ): Promise<EmbersRun> {
-  return update($, run, r => withOff(transition(withOff(r), ...input)))
+  return update($, run, r => transition(r, ...input))
 }
 
-export const isOff = (r: EmbersRun): boolean => r.isOff
+/** `/embers off` holds for the process: `$.state` survives a reload, the variable a `/clear`. */
+export const isOff = (r: EmbersRun): boolean => r.isOff || inProcess.isOff
 
 const idle = (cache: Cache | undefined): Phase => (cache === undefined ? { kind: 'idle' } : { kind: 'idle', cache })
 
@@ -115,3 +111,5 @@ export const offerMade = (r: EmbersRun): EmbersRun => ({ ...r, startOffered: tru
 export const lapseObserved = (r: EmbersRun, lapse: Lapse | undefined): EmbersRun => ({ ...r, lapse })
 
 export const switchedOff = (r: EmbersRun): EmbersRun => ({ ...r, isOff: true, phase: idle(r.phase.cache) })
+
+export const switchedOn = (r: EmbersRun): EmbersRun => ({ ...r, isOff: false })
