@@ -199,11 +199,32 @@ async function swap(
   )
 }
 
-/** The cold-prompt path; undefined sends the prompt as it is. */
+/**
+ * A resumed process: the session's own handoff, still matching its turn
+ * count, says when the cache was last read and how large the context was,
+ * so the first prompt is judged and a swap is offered.
+ */
+export async function seedFromHandoff($: EngineInterface): Promise<void> {
+  const [sessionId, root, turns] = await Promise.all([$.session.id(), $.session.root(), $.session.turns()])
+  const record = await readHandoff($, handoffKey(root, sessionId))
+  if (record === undefined || record.turns !== turns) return
+  await change($, r =>
+    r.lastCacheTouch !== undefined
+      ? r
+      : { ...r, lastCacheTouch: record.writtenAt, contextTokens: record.contextTokens },
+  )
+}
+
+/**
+ * The cold-prompt path; undefined sends the prompt as it is. `knownTokens`
+ * stands in for `context.tokens`, absent before a resumed process's first
+ * response.
+ */
 export async function coldPrompt(
   $: EngineInterface,
   config: Config,
   idleMs: number,
+  knownTokens: number | undefined,
 ): Promise<PromptSubmitResult | undefined> {
   const [sessionId, root, turns, usage] = await Promise.all([
     $.session.id(),
@@ -211,7 +232,7 @@ export async function coldPrompt(
     $.session.turns(),
     $.session.usage({ breakdown: 'summary' }),
   ])
-  const tokens = usage.context.tokens
+  const tokens = usage.context.tokens ?? knownTokens
   const fixed = fixedTokens(usage.context.breakdown)
   if (tokens === undefined || tokens < config.minContextTokens || fixed === undefined) return undefined
   if (tokens - fixed < config.minSavingTokens) return undefined

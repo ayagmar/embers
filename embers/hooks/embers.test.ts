@@ -28,7 +28,8 @@ type World = {
   /** What the main loop's next request reads from the cache. */
   stepUsage: ModelUsage
   turns: number
-  contextTokens: number
+  /** `context.tokens`; absent before a resumed process's first response. */
+  contextTokens: number | undefined
   answer: string
   forks: number
   asks: { question: string; labels: string[] }[]
@@ -76,10 +77,10 @@ function engine(on: On, overrides: Partial<World> = {}): World {
           categories: [
             { name: 'System prompt', tokens: 8000, color: 'x', isDeferred: false, kind: 'used' },
             { name: 'System tools', tokens: 12_000, color: 'x', isDeferred: false, kind: 'used' },
-            { name: 'Messages', tokens: world.contextTokens - 20_000, color: 'x', isDeferred: false, kind: 'used' },
+            { name: 'Messages', tokens: (world.contextTokens ?? 20_000) - 20_000, color: 'x', isDeferred: false, kind: 'used' },
             { name: 'Free space', tokens: 80_000, color: 'x', isDeferred: false, kind: 'free' },
           ],
-          totalTokens: world.contextTokens,
+          totalTokens: world.contextTokens ?? 20_000,
           maxTokens: 200_000,
           rawMaxTokens: 200_000,
           autocompactSource: 'model-default',
@@ -274,6 +275,22 @@ test('a prompt sent again while the swap runs is refused, not asked about or sen
   expect(world.commands).toEqual(['clear'])
   expect(world.forks).toBe(1)
   expect(await $.prompt.submit({ text: 'go on', ...typed })).toEqual({ text: 'go on' })
+})
+
+test('a resumed session with its handoff on file is offered the swap before any response', async ($, on) => {
+  const world = engine(on, { answer: 'Swap to handoff', contextTokens: undefined })
+  const clock = mock.clock(on, { now: T0 + 120 * MINUTE })
+  memoryStore(on, { [KEY]: handoff({}) })
+  const session = mock.session(on)
+
+  await $.session.start(start)
+  const dropped = await $.prompt.submit({ text: 'go on', ...typed })
+  await clock.settle()
+
+  expect(dropped.drop).toContain('swapping to the handoff')
+  expect(world.asks[0]?.question).toContain('Sending rewrites 100k tokens')
+  expect(world.commands).toEqual(['clear'])
+  expect(session.appended()).toHaveLength(1)
 })
 
 test('a handoff whose turn count no longer matches is not swapped to', async ($, on) => {

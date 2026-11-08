@@ -67,7 +67,7 @@ Retention: a handoff is deleted when swapped to, loaded, or overtaken by a later
 
 Session id, root and turns are captured before every await and bound to the record; `/clear` mid-fork must not store the old conversation under the new id.
 
-Resume: `classic.SessionStart` with `source: 'resume'` carries `seconds_since_last_response` and `context_tokens` (`d.ts:12610-12629`); embers seeds `lastCacheTouch` and `contextTokens` from them so the first prompt after a resume is judged correctly.
+Resume: `session.start`, when `lastCacheTouch` is unset, reads the session's own handoff and, when its turn count still matches, seeds `lastCacheTouch` from `writtenAt` and `contextTokens` from the record. A matching handoff is the only case where a swap is possible. `context.tokens` is absent until the first response of a resumed process, so the cold path falls back to the seeded `contextTokens`. Classic hooks are not used for this: an organization plugin can bypass a mod's `classic.*` hooks.
 
 ## Configuration (`userConfig`)
 

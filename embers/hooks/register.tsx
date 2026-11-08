@@ -9,6 +9,7 @@ import {
   observeTtl,
   offerHandoff,
   readRun,
+  seedFromHandoff,
   status,
   ttlMs,
   writeHandoff,
@@ -34,6 +35,7 @@ export const register: Register = (on, options) => {
       reshaping: undefined,
     }))
     if (s.phase === 'armed' && s.deadline !== undefined) arm($, config, now, s.deadline)
+    if (s.lastCacheTouch === undefined) await seedFromHandoff($)
     await sweep($, now)
     return next(e)
   }).catch(($, e, next) => next(e))
@@ -50,7 +52,7 @@ export const register: Register = (on, options) => {
     const [now, ttl] = await Promise.all([$.clock.now(), ttlMs($, config)])
     const idle = now - s.lastCacheTouch
     if (idle < ttl) return next(e)
-    return (await coldPrompt($, config, idle)) ?? next(e)
+    return (await coldPrompt($, config, idle, s.contextTokens)) ?? next(e)
   }).catch(($, e, next) => next(e))
 
   on('turn.start', async ($, e, next) => {
@@ -170,10 +172,6 @@ export const register: Register = (on, options) => {
     if (e.agent_id !== undefined) return next(e)
     if (e.source === 'clear') {
       await cleared($)
-    } else if (e.source === 'resume' && e.seconds_since_last_response !== undefined) {
-      const now = await $.clock.now()
-      const touch = now - e.seconds_since_last_response * 1000
-      await change($, r => ({ ...r, phase: 'idle', lastCacheTouch: touch, contextTokens: e.context_tokens }))
     } else if (e.source === 'startup' && config.offerOnStart) {
       $.clock.after(0, () => {
         void offerHandoff($, config).catch(error => $.ui.log(`embers: start offer failed: ${String(error)}`, { to: 'debug' }))
