@@ -1,6 +1,6 @@
 # embers: design
 
-Revision 2, after the challenge in `briefs/01-challenge-report.md`. Line references `d.ts:<n>` point into `reference/claude-code.d.ts`.
+Revision 2. Line references `d.ts:<n>` point into the plugin API types of the Claude Code build this was designed against (2.1.319). Claude Code writes them locally: load the `plugin-authoring` skill in a session, and they appear under `embers/.claude-plugin/types/claude-code/index.d.ts` once the mod has loaded (gitignored).
 
 ## Problem
 

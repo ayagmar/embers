@@ -69,3 +69,11 @@ Set these in the plugin's config menu.
 A handoff reads the cached conversation and, in the runs measured, writes little to the cache: 7.6k tokens after a conversation's first turn, and none after a turn of eight file reads that added 46k tokens. A session you abandon costs one handoff.
 
 The design is in `docs/DESIGN.md`.
+
+## Developing
+
+```
+npm ci && npm run check
+```
+
+That runs Biome, `tsc`, the plugin tests and `claude plugin validate`. The type-check needs the plugin API types, which Claude Code writes under `embers/.claude-plugin/types/` the first time the mod loads with the `plugin-authoring` skill active; they are gitignored. `docs/probes/` holds a small plugin whose test shows why the swap clears the session instead of compacting it.
