@@ -1,0 +1,4 @@
+node_modules/
+embers/.claude-plugin/types/
+embers/tsconfig.json
+*.log

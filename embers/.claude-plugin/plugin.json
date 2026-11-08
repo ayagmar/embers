@@ -1,0 +1,6 @@
+{
+  "name": "embers",
+  "version": "0.1.0",
+  "description": "Keeps your Claude Code context warm: writes a handoff before the prompt cache goes cold, swaps to it when you come back.",
+  "types": "./types/index.d.ts"
+}
