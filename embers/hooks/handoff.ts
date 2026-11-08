@@ -252,8 +252,10 @@ export async function coldPrompt(
     $.session.usage({ breakdown: 'summary' }),
   ])
   const tokens = usage.context.tokens ?? knownTokens
-  const fixed = fixedTokens(usage.context.breakdown)
-  if (tokens === undefined || tokens < config.minContextTokens || fixed === undefined) return undefined
+  const estimated = fixedTokens(usage.context.breakdown)
+  if (tokens === undefined || tokens < config.minContextTokens || estimated === undefined) return undefined
+  // A local estimate that can exceed the API's figure: Fresh never costs more than sending.
+  const fixed = Math.min(estimated, tokens)
   if (tokens - fixed < config.minSavingTokens) return undefined
   const onFile = await readHandoff($, handoffKey(root, sessionId))
   const matching = onFile !== undefined && onFile.turns === turns ? onFile : undefined
