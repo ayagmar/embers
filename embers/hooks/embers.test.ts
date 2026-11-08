@@ -218,7 +218,8 @@ test('a cold prompt with a matching handoff swaps to it without a model call', a
   expect(rows[0]).toContain('LAST REPLY: shipped v2')
   expect(world.forks).toBe(1)
   expect(world.compactions).toEqual([])
-  expect(world.filled).toEqual(['go on'])
+  // The engine puts a dropped prompt back in the box; filling it too doubles it.
+  expect(world.filled).toEqual([])
   expect(store.has(KEY)).toBe(false)
   // The prompt sent from the box enters on the short prefix, unasked.
   await $.prompt.submit({ text: 'go on', ...typed })

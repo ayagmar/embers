@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, ModelUsage, PromptSubmitInput, PromptSubmitResult, Timer } from 'claude-code'
+import type { EngineInterface, ModelUsage, PromptSubmitResult, Timer } from 'claude-code'
 
 import type { EmbersRun, HandoffRecord } from '../types'
 import {
@@ -197,7 +197,6 @@ async function swap(
 export async function coldPrompt(
   $: EngineInterface,
   config: Config,
-  e: PromptSubmitInput,
   idleMs: number,
 ): Promise<PromptSubmitResult | undefined> {
   const [sessionId, root, turns, usage] = await Promise.all([
@@ -230,25 +229,24 @@ export async function coldPrompt(
   }
 
   if (choice !== FRESH && choice !== SWAP && choice !== HANDOFF_SWAP) return undefined
-  // The host refuses a compaction under the turn a prompt.submit hook holds,
-  // so the prompt is dropped, the session reshaped from a timer, and the text
-  // put back in the box for the person to send on the short prefix.
-  const text = e.text
+  // The host refuses a compaction or a command under the turn a prompt.submit
+  // hook holds, so the prompt is dropped (the engine puts it back in the box)
+  // and the session is reshaped from a timer for the person to send it again.
   const swapTo = choice === SWAP ? matching : undefined
   const plan = { choice, swapTo, tokens, fixed }
   $.clock.after(0, () => {
-    void reshape($, config, plan, text).catch(error =>
+    void reshape($, config, plan).catch(error =>
       $.ui.log(`embers: ${choice} failed: ${String(error)}`, { to: 'debug' }),
     )
   })
   const what = choice === FRESH ? 'starting fresh' : 'swapping to the handoff'
-  return { drop: `embers: ${what}; your prompt comes back in the box (paste attachments again)` }
+  return { drop: `embers: ${what}; your prompt stays in the box (paste attachments again)` }
 }
 
 type Reshape = { choice: string; swapTo: HandoffRecord | undefined; tokens: number; fixed: number }
 
-/** Runs the choice made at a cold prompt, then puts the dropped prompt back. */
-async function reshape($: EngineInterface, config: Config, plan: Reshape, text: string): Promise<void> {
+/** Runs the choice made at a cold prompt; the engine has put the dropped prompt back in the box. */
+async function reshape($: EngineInterface, config: Config, plan: Reshape): Promise<void> {
   try {
     if (plan.choice === FRESH) {
       await $.command.run({ command: 'clear' })
@@ -272,9 +270,8 @@ async function reshape($: EngineInterface, config: Config, plan: Reshape, text: 
     }
     if (record !== undefined) await swap($, record, plan.tokens, plan.fixed)
   } finally {
-    // Whatever happened, the person has chosen: the prompt they send next is not asked about again.
+    // The person has chosen: the prompt they send next is not asked about again.
     await change($, r => ({ ...r, lastCacheTouch: undefined }))
-    await $.prompt.fill({ text, mode: 'insert' })
   }
 }
 

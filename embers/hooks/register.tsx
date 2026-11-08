@@ -47,7 +47,7 @@ export const register: Register = (on, options) => {
     const [now, ttl] = await Promise.all([$.clock.now(), ttlMs($, config)])
     const idle = now - s.lastCacheTouch
     if (idle < ttl) return next(e)
-    return (await coldPrompt($, config, e, idle)) ?? next(e)
+    return (await coldPrompt($, config, idle)) ?? next(e)
   }).catch(($, e, next) => next(e))
 
   on('turn.start', async ($, e, next) => {
