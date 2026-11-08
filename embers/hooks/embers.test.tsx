@@ -84,7 +84,13 @@ function engine(on: On, overrides: Partial<World> = {}): World {
           categories: [
             { name: 'System prompt', tokens: 8000, color: 'x', isDeferred: false, kind: 'used' },
             { name: 'System tools', tokens: 12_000, color: 'x', isDeferred: false, kind: 'used' },
-            { name: 'Messages', tokens: (world.contextTokens ?? 20_000) - 20_000, color: 'x', isDeferred: false, kind: 'used' },
+            {
+              name: 'Messages',
+              tokens: (world.contextTokens ?? 20_000) - 20_000,
+              color: 'x',
+              isDeferred: false,
+              kind: 'used',
+            },
             { name: 'Free space', tokens: 80_000, color: 'x', isDeferred: false, kind: 'free' },
           ],
           totalTokens: world.contextTokens ?? 20_000,
@@ -158,7 +164,6 @@ function engine(on: On, overrides: Partial<World> = {}): World {
   })
   return world
 }
-
 
 /** `$.store` beneath the plugin, held in a Map the test reads. */
 function memoryStore(on: On, entries: Record<string, unknown> = {}): Map<string, unknown> {
@@ -253,7 +258,14 @@ async function band($: Engine): Promise<string> {
     plugin: 'embers',
     surface: 'terminal',
     component: 'AbovePrompt',
-    props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 120, scroll: { offset: 0, bodyRows: 10 }, view: {} },
+    props: {
+      hasSurvey: false,
+      isWorking: false,
+      maxRows: 10,
+      bodyColumns: 120,
+      scroll: { offset: 0, bodyRows: 10 },
+      view: {},
+    },
   })
   const text = (await ui.find({ type: 'Text', text: /embers/ }))?.text ?? ''
   await ui.unmount()
@@ -372,7 +384,12 @@ test('/embers off holds after a /clear, which starts the state over', async ($, 
   const clock = mock.clock(on, { now: T0 })
   memoryStore(on)
   const startOver = stateStartsOver(on)
-  const off = { command: 'embers', args: 'off', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 120 } } as const
+  const off = {
+    command: 'embers',
+    args: 'off',
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: false, columns: 120 },
+  } as const
 
   await $.session.start(start)
   await $.command.run(off)
@@ -580,7 +597,12 @@ test('/embers on a cold cache asks before a fork that rereads the whole context'
   const world = engine(on, { answer: 'Cancel', surfaces: [] })
   const clock = mock.clock(on, { now: T0 })
   memoryStore(on)
-  const embers = { command: 'embers', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 120 } } as const
+  const embers = {
+    command: 'embers',
+    args: '',
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: false, columns: 120 },
+  } as const
 
   await $.session.start({ ...start, isInteractive: false })
   await $.turn.complete(turnEnd)
@@ -595,26 +617,30 @@ test('/embers on a cold cache asks before a fork that rereads the whole context'
   expect(written.text).toStartWith('Handoff written')
 })
 
-test('a userConfig reload while armed re-arms the timer the reload lost, once', { options: { marginMinutes: 10 } }, async ($, on) => {
-  const world = engine(on)
-  const clock = manualClock(on, T0)
-  memoryStore(on)
+test(
+  'a userConfig reload while armed re-arms the timer the reload lost, once',
+  { options: { marginMinutes: 10 } },
+  async ($, on) => {
+    const world = engine(on)
+    const clock = manualClock(on, T0)
+    memoryStore(on)
 
-  await $.session.start(start)
-  await $.turn.complete(turnEnd)
-  clock.now = T0 + 20 * MINUTE
-  // A reload starts the module over: its timer is gone, `$.state` survived.
-  for (const wait of clock.waits) wait.lose()
-  await $.session.start(start)
+    await $.session.start(start)
+    await $.turn.complete(turnEnd)
+    clock.now = T0 + 20 * MINUTE
+    // A reload starts the module over: its timer is gone, `$.state` survived.
+    for (const wait of clock.waits) wait.lose()
+    await $.session.start(start)
 
-  expect(await band($)).toBe(`embers  warm  handoff at ${hhmm(T0 + 50 * MINUTE)}`)
-  const live = clock.waits.filter(wait => wait.isLive())
-  expect(live.map(wait => wait.due)).toEqual([T0 + 50 * MINUTE])
-  clock.now = T0 + 50 * MINUTE
-  for (const wait of live) wait.fire()
-  await drain()
-  expect(world.forks).toBe(1)
-})
+    expect(await band($)).toBe(`embers  warm  handoff at ${hhmm(T0 + 50 * MINUTE)}`)
+    const live = clock.waits.filter(wait => wait.isLive())
+    expect(live.map(wait => wait.due)).toEqual([T0 + 50 * MINUTE])
+    clock.now = T0 + 50 * MINUTE
+    for (const wait of live) wait.fire()
+    await drain()
+    expect(world.forks).toBe(1)
+  },
+)
 
 test('/compact typed by the person reaches core, even with marker-like instructions', async ($, on) => {
   const world = engine(on)

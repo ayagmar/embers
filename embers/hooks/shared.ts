@@ -1,10 +1,4 @@
-import type {
-  ModelUsage,
-  PluginOptions,
-  PromptSubmitInput,
-  SessionContextBreakdown,
-  SessionMessage,
-} from 'claude-code'
+import type { ModelUsage, PluginOptions, PromptSubmitInput, SessionContextBreakdown, SessionMessage } from 'claude-code'
 
 import type { EmbersRun, HandoffRecord } from '../types'
 

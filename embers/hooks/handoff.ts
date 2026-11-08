@@ -111,15 +111,9 @@ export async function writeHandoff($: EngineInterface, config: Config): Promise<
   const now = await $.clock.now()
   if (!reply.isAnswered) {
     await change($, r => (r.phase === 'writing' ? { ...r, phase: 'idle' } : r))
-    return reply.reason === 'nothing-to-fork'
-      ? { reason: reply.reason }
-      : { reason: reply.reason, usage: reply.usage }
+    return reply.reason === 'nothing-to-fork' ? { reason: reply.reason } : { reason: reply.reason, usage: reply.usage }
   }
-  const [sessionAfter, turnsAfter, s] = await Promise.all([
-    $.session.id(),
-    $.session.turns(),
-    readRun($),
-  ])
+  const [sessionAfter, turnsAfter, s] = await Promise.all([$.session.id(), $.session.turns(), readRun($)])
   if (sessionAfter !== sessionId || turnsAfter !== turns || s.phase !== 'writing') {
     // A turn or a /clear that moved on set its own phase; only a stale `writing` is ours.
     await change($, r => (r.phase === 'writing' ? { ...r, phase: 'idle' } : r))
@@ -194,12 +188,7 @@ export async function cleared($: EngineInterface): Promise<void> {
  * plugin's own `session.compact` hook, so core would summarize the cold
  * prefix; a clear and an append make no model call.
  */
-async function swap(
-  $: EngineInterface,
-  record: HandoffRecord,
-  tokens: number,
-  fixed: number,
-): Promise<void> {
+async function swap($: EngineInterface, record: HandoffRecord, tokens: number, fixed: number): Promise<void> {
   const oldId = await $.session.id()
   await $.command.run({ command: 'clear' })
   await cleared($)
@@ -285,9 +274,7 @@ export async function coldPrompt(
   const plan = { swapTo: choice === SWAP ? matching : undefined, tokens, fixed }
   isReshaping = true
   $.clock.after(0, () => {
-    void reshape($, plan).catch(error =>
-      $.ui.log(`embers: ${choice} failed: ${String(error)}`, { to: 'debug' }),
-    )
+    void reshape($, plan).catch(error => $.ui.log(`embers: ${choice} failed: ${String(error)}`, { to: 'debug' }))
   })
   const what = choice === FRESH ? 'starting fresh' : 'swapping to the handoff'
   return { drop: `embers: ${what}; your prompt stays in the box (paste attachments again)` }

@@ -4,8 +4,7 @@ import type { HandoffRecord, TtlRecord } from '../types'
 
 const RETAIN_MS = 14 * 86_400_000
 
-export const handoffKey = (root: string, sessionId: string): string =>
-  `handoff:${root}:${sessionId}`
+export const handoffKey = (root: string, sessionId: string): string => `handoff:${root}:${sessionId}`
 export const ttlKey = (model: string): string => `ttl:${model}`
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
@@ -43,10 +42,7 @@ function parseTtl(value: unknown): TtlRecord | undefined {
  * The one reader of `$.store`: a record whose key kind, `v` or shape does not
  * check out reads as absent and is deleted.
  */
-async function readRecord(
-  $: EngineInterface,
-  key: string,
-): Promise<HandoffRecord | TtlRecord | undefined> {
+async function readRecord($: EngineInterface, key: string): Promise<HandoffRecord | TtlRecord | undefined> {
   const value = await $.store.get(key)
   if (value === undefined) return undefined
   const record = key.startsWith('handoff:')
@@ -58,10 +54,7 @@ async function readRecord(
   return record
 }
 
-export async function readHandoff(
-  $: EngineInterface,
-  key: string,
-): Promise<HandoffRecord | undefined> {
+export async function readHandoff($: EngineInterface, key: string): Promise<HandoffRecord | undefined> {
   const record = await readRecord($, key)
   return record !== undefined && 'root' in record ? record : undefined
 }
@@ -125,8 +118,7 @@ export async function ttlMinutes($: EngineInterface, configured: number): Promis
 }
 
 /** The margin before the TTL: the configured one, cut to a fifth of a short TTL (but not under a minute). */
-export const marginFor = (ttl: number, margin: number): number =>
-  Math.min(margin, Math.max(1, ttl / 5))
+export const marginFor = (ttl: number, margin: number): number => Math.min(margin, Math.max(1, ttl / 5))
 
 /** The checked-out branch, or '' outside git. */
 export async function currentBranch($: EngineInterface): Promise<string> {

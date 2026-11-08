@@ -37,7 +37,9 @@ export const register: Register = (on, options) => {
     // which already holds its own context.
     if (config.offerOnStart && e.isInteractive && !s.startOffered && (await $.session.turns()) === 0) {
       $.clock.after(0, () => {
-        void offerHandoff($, config).catch(error => $.ui.log(`embers: start offer failed: ${String(error)}`, { to: 'debug' }))
+        void offerHandoff($, config).catch(error =>
+          $.ui.log(`embers: start offer failed: ${String(error)}`, { to: 'debug' }),
+        )
       })
     }
     return next(e)
@@ -97,8 +99,7 @@ export const register: Register = (on, options) => {
     const tokens = usage.context.tokens
     const margin = marginFor(ttl / MINUTE, config.marginMinutes) * MINUTE
     const s = await change($, r => {
-      const isArmed =
-        !r.isOff && isInteractive && tokens !== undefined && tokens >= config.minContextTokens
+      const isArmed = !r.isOff && isInteractive && tokens !== undefined && tokens >= config.minContextTokens
       return {
         ...r,
         phase: isArmed ? 'armed' : 'idle',
@@ -146,7 +147,10 @@ export const register: Register = (on, options) => {
       const tokens = usage.context.tokens
       const size = tokens === undefined ? 'the whole conversation' : `${k(tokens)} tokens`
       const answer = await $.ui
-        .ask(`The prompt cache is cold, so a handoff now rereads ${size} at the cache-write price. Write it anyway?`, [WRITE, CANCEL])
+        .ask(`The prompt cache is cold, so a handoff now rereads ${size} at the cache-write price. Write it anyway?`, [
+          WRITE,
+          CANCEL,
+        ])
         .catch(() => CANCEL)
       if (answer !== WRITE) return { text: 'No handoff written.' }
     }
@@ -187,7 +191,14 @@ export const register: Register = (on, options) => {
     const [model, now] = await Promise.all([$.session.model(), $.clock.now()])
     await $.store.set(ttlKey(model), { v: 1, observedMinutes: e.cache_ttl === '5m' ? 5 : 60, observedAt: now })
     // The new model has no cache entry: nothing to judge or keep warm.
-    await change($, r => ({ ...r, phase: 'idle', deadline: undefined, lastCacheTouch: undefined, handoffAt: undefined, lapse: undefined }))
+    await change($, r => ({
+      ...r,
+      phase: 'idle',
+      deadline: undefined,
+      lastCacheTouch: undefined,
+      handoffAt: undefined,
+      lapse: undefined,
+    }))
     return next(e)
   }).catch(($, e, next) => next(e))
 
