@@ -12,14 +12,16 @@ Updated 2026-11-08.
 
 - Re-check (`briefs/05-recheck-report.md`): MERGE; the three minor regressions and two follow-ups fixed (18 tests). PR #1 merged to `main` with a merge commit on 2026-11-08. Worktree and panes closed.
 
+- Sweep on `refactor/sweep` (`briefs/07-status.md`): explicit state machine, one off switch and `/embers on`, Biome and `npm run check`, figures in words, fuller `/embers status`, `handoffInstructions`, README rewrite. 19 tests, live run clean.
+
 ## In flight
 
-- Nothing.
+- `refactor/sweep` is pushed and not merged. It needs review and a merge.
 
 ## Next
 
-1. Run the mod in a real session with default settings for a few days: `claude --plugin-dir ~/projects/embers/embers`. Watch the fork toasts for `cache_creation_input_tokens` after a long agentic turn.
-2. README: usage, options table, what the band and the ask look like. Add an icon if the mod is ever published.
+1. Run the mod in a real session with default settings for a few days: `claude --plugin-dir ~/projects/embers/embers`. Watch the `wrote` figure in the fork toasts after a long agentic turn.
+2. Add an icon if the mod is ever published.
 
 ## Decisions taken
 
@@ -29,6 +31,6 @@ Updated 2026-11-08.
 
 ## Open
 
-- The fork's uncached tail is the last turn (explained in `briefs/05-recheck-report.md`); measure one fork after a multi-step turn before stating the cost in the README. Manifest `author` and icon are publishing metadata, left for the owner.
+- The fork's uncached tail is the last turn (explained in `briefs/05-recheck-report.md`); one fork after a multi-step turn is still unmeasured. Manifest `author` and icon are publishing metadata, left for the owner.
 - Whether the org plugin bypass of `classic.*` hooks also applies to `classic.PostModelSwitch` (assumed yes; the mod no longer depends on it).
 - Publishing: not planned until the mod has run for a few days with default settings.
