@@ -49,20 +49,27 @@ Two things make it worse:
 
 ## State
 
-`$.state` (session, JSON only, survives hot reload):
+`$.state` (session, JSON only; survives a hot reload, starts over under the new session id after a `/clear`):
 
 - `phase`: `idle` | `armed` | `writing` | `ready`
 - `lastCacheTouch`: epoch ms of the last main-loop turn end or warm fork
+- `modelAtTouch`: the model at that turn end; the timer and the TTL observation act only while the model is unchanged
 - `contextTokens`: from the last main-loop `turn.complete`, or absent
 - `deadline`: epoch ms the timer should fire, while `armed`
-- `effortAtTouch`: the effort level at the last turn end
+- `warmUntil`, `handoffAt`: for the band
+- `isOff`: `/embers off`
 - `startOffered`: whether the start offer was shown this session
+- `lapse`: a held or stored TTL observation (see "TTL observation")
 
-The timer handle lives in a module variable. `session.start` (which fires on reload too) re-arms from `deadline` when `phase` is `armed` and the deadline is still ahead. The timer is cancelled at main-loop `prompt.submit` and `turn.start`. When it fires, it re-reads `$.state` and the clock before forking.
+Module variables hold what must outlive a `/clear` and may start over on a reload: the timer handle, `isInteractive` (set by every `session.start`), and whether a swap is running. A `/clear` starts `$.state` over and no `session.start` follows it.
+
+The effort level is not kept: no API reads it while idle. `/effort` disarms the timer and clears the cache touch instead.
+
+`session.start` (which fires on reload too) re-arms from `deadline` when `phase` is `armed` and the deadline is still ahead. The timer is cancelled at main-loop `prompt.submit` and `turn.start`. When it fires, it re-reads `$.state` and the clock before forking.
 
 `$.store` (across sessions), one key per record, no index:
 
-- `handoff:<root>:<sessionId>`: `{ v: 1, root, branch, sessionId, turns, writtenAt, contextTokens, text, lastAssistant }`. `lastAssistant` is the last assistant message's text, taken from `$.session.messages()` before the fork, because the fork's view ends at the last request and never sees the final reply. The swap appends it after the handoff.
+- `handoff:<root>:<sessionId>`: `{ v: 1, root, branch, sessionId, turns, writtenAt, contextTokens, text, lastAssistant, offeredAt? }`. `lastAssistant` is the last assistant message's text, taken from `$.session.messages()` before the fork, because the fork's view ends at the last request and never sees the final reply. The swap appends it after the handoff.
 - `ttl:<model>`: `{ v: 1, observedMinutes, observedAt }`.
 
 Retention: a handoff is deleted when swapped to, loaded, or overtaken by a later main-loop turn of its own session. Per root and branch, an older handoff than the newest is dropped once it is older than twice the TTL; a younger one may belong to another session still open in the same checkout. Records older than 14 days are dropped. Both run on session start and after each handoff is written. Every read validates `v` and shape; a record that fails is treated as absent and deleted.
@@ -76,7 +83,7 @@ Resume: `session.start`, when `lastCacheTouch` is unset, reads the session's own
 | key | type | default | meaning |
 |---|---|---|---|
 | `ttlMinutes` | number | 60 | assumed cache lifetime; overridden by an engine-reported or observed TTL |
-| `marginMinutes` | number | 5 | how long before the TTL the handoff is written |
+| `marginMinutes` | number | 5 | how long before the TTL the handoff is written; cut to a fifth of a short TTL, but not under a minute (1m for a 5m TTL: the fork runs at 4m) |
 | `minContextTokens` | number | 40000 | below this, embers does nothing |
 | `minSavingTokens` | number | 20000 | a swap must shrink the prefix by at least this |
 | `coldMode` | `ask` / `swap` / `send` / `off` | `ask` | see "Cold prompt" |
@@ -91,7 +98,7 @@ A `userConfig` change reloads the mod; the state above survives it.
   - armed: `embers  warm  handoff at 12:55`
   - writing: `embers  writing handoff…`
   - ready: `embers  handoff ready  12:55, 118k tokens, warm until 13:55`
-  - ttl observed: `embers  cache lapsed after 5m  margin now 4m`
+  - ttl stored: `embers  cache lapsed after 5m  margin now 1m`
 - **Ask** (`$.ui.ask`) on a cold prompt, with the options above and one line of cost: the context size, what sending cold costs, what the swap costs.
 - **Toast** once per handoff, swap or skipped fork, with the token figures.
 - **Commands**: `/embers` writes a handoff now (asks first if the cache is cold); `/embers status` lists this root's handoffs and the observed TTL; `/embers off` disables for this session.
