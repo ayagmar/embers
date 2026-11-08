@@ -18,10 +18,11 @@ Two things make it worse:
 2. **Cold prompt.** On a person's `prompt.submit` on the main loop, embers compares the time since the last cache touch (the last main-loop turn end, or a later fork that read the cache) with the TTL.
    - Under the TTL: the prompt passes through. Nothing drawn, nothing logged.
    - Over the TTL: embers asks, inside the hook with `$.ui.ask`, and then calls `next(e)` with the prompt intact. The choices:
-     - **swap** (first, when a handoff is on file and matches the session id and turn count): compact to the handoff, then let the prompt enter on the short prefix.
-     - **handoff and swap** (when no matching handoff is on file): one cold fork writes the handoff, then compact, then the prompt enters.
+     - **swap** (first, offered only when a handoff is on file and matches the session id and turn count): compact to the handoff, then let the prompt enter on the short prefix.
      - **send**: the prompt enters cold, the cache rewarms on that request.
      - **fresh**: `/clear`, then the prompt enters first. The hook drops the prompt, fills it back into the prompt box, and runs `/clear` from `$.clock.after(0, …)` because `$.command.run` rejects inside a hook the turn waits on (`d.ts:3236`). Attachments must be pasted again; the ask says so.
+   - Without a matching handoff the ask offers only send and fresh. Writing a handoff at that point would itself reread the whole cold prefix P at the cache-write price, the same 1.25 × P that sending pays, and the swap would then write the short prefix S at 1.25 × S on top. Sending leaves P warm, read at 0.1 × P per later request. For P = 100k and S = 25k the swap adds about 31k token-equivalents now to save 7.5k per later request: it pays back only after four or more.
+   - The question states each choice's size: `The prompt cache is cold (65m idle). Sending rewrites 100k tokens; swapping to the 12:55 handoff writes ~25k; a fresh session writes ~20k (paste attachments again). What now?` Without a handoff the swap clause is left out.
    - `coldMode` `swap` skips the ask when a matching handoff is on file. `send` and `off` never ask. If the ask rejects (dismissed, non-interactive), the prompt is sent.
    - The swap is skipped, and the prompt sent, when the saving is small: context tokens minus (system and tools tokens plus handoff tokens) below `minSavingTokens`. The system and tools figure comes from `$.session.usage({ breakdown: "summary" })`.
 

@@ -16,7 +16,6 @@ import {
 import {
   FRESH,
   HANDOFF_PROMPT,
-  HANDOFF_SWAP,
   KNOWN_TTLS,
   LOAD,
   MINUTE,
@@ -221,27 +220,28 @@ export async function coldPrompt(
     return undefined
   }
 
+  // Writing a handoff now would reread the cold prefix and then throw that
+  // write away: with no handoff on file, the choice is to send or start fresh.
   let choice: string
   if (config.coldMode === 'swap' && matching !== undefined) {
     choice = SWAP
   } else {
-    const cost =
+    const swapCost =
       matching === undefined
-        ? `a handoff first rereads ${k(tokens)} cold, then the swap writes ~${k(fixed)} plus the handoff`
-        : `swapping to the ${clockTime(matching.writtenAt)} handoff writes ~${k(fixed + handoffTokens(matching))}`
-    const question = `The prompt cache is cold (${minutesOf(idleMs)}m idle). Sending rewrites ${k(tokens)} tokens; ${cost}. Fresh clears the session (paste attachments again). What now?`
-    const labels = [matching === undefined ? HANDOFF_SWAP : SWAP, SEND, FRESH]
+        ? ''
+        : `; swapping to the ${clockTime(matching.writtenAt)} handoff writes ~${k(fixed + handoffTokens(matching))}`
+    const question = `The prompt cache is cold (${minutesOf(idleMs)}m idle). Sending rewrites ${k(tokens)} tokens${swapCost}; a fresh session writes ~${k(fixed)} (paste attachments again). What now?`
+    const labels = matching === undefined ? [SEND, FRESH] : [SWAP, SEND, FRESH]
     choice = await $.ui.ask(question, { header: 'embers', options: labels }).catch(() => SEND)
   }
 
-  if (choice !== FRESH && choice !== SWAP && choice !== HANDOFF_SWAP) return undefined
+  if (choice !== FRESH && choice !== SWAP) return undefined
   // The host refuses a compaction or a command under the turn a prompt.submit
   // hook holds, so the prompt is dropped (the engine puts it back in the box)
   // and the session is reshaped from a timer for the person to send it again.
-  const swapTo = choice === SWAP ? matching : undefined
-  const plan = { choice, swapTo, tokens, fixed }
+  const plan = { swapTo: choice === SWAP ? matching : undefined, tokens, fixed }
   $.clock.after(0, () => {
-    void reshape($, config, plan).catch(error =>
+    void reshape($, plan).catch(error =>
       $.ui.log(`embers: ${choice} failed: ${String(error)}`, { to: 'debug' }),
     )
   })
@@ -249,32 +249,18 @@ export async function coldPrompt(
   return { drop: `embers: ${what}; your prompt stays in the box (paste attachments again)` }
 }
 
-type Reshape = { choice: string; swapTo: HandoffRecord | undefined; tokens: number; fixed: number }
+/** A swap to `swapTo`, or a fresh session when it is absent. */
+type Reshape = { swapTo: HandoffRecord | undefined; tokens: number; fixed: number }
 
 /** Runs the choice made at a cold prompt; the engine has put the dropped prompt back in the box. */
-async function reshape($: EngineInterface, config: Config, plan: Reshape): Promise<void> {
+async function reshape($: EngineInterface, plan: Reshape): Promise<void> {
   try {
-    if (plan.choice === FRESH) {
+    if (plan.swapTo === undefined) {
       await $.command.run({ command: 'clear' })
       await cleared($)
       return
     }
-    let record = plan.swapTo
-    if (plan.choice === HANDOFF_SWAP) {
-      const written = await writeHandoff($, config)
-      if (!('record' in written)) {
-        $.ui.toast(`embers: no handoff (${written.reason}); send again to go cold`)
-        return
-      }
-      $.ui.toast(`embers: handoff written; ${forkFigures(written.usage)}`)
-      const saving = plan.tokens - (plan.fixed + handoffTokens(written.record))
-      if (saving < config.minSavingTokens) {
-        $.ui.toast(`embers: the handoff saves only ${k(saving)} tokens; no swap`)
-        return
-      }
-      record = written.record
-    }
-    if (record !== undefined) await swap($, record, plan.tokens, plan.fixed)
+    await swap($, plan.swapTo, plan.tokens, plan.fixed)
   } finally {
     // The person has chosen: the prompt they send next is not asked about again.
     await change($, r => ({ ...r, lastCacheTouch: undefined }))

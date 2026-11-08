@@ -23,7 +23,6 @@ export const HANDOFF_PROMPT = [
 ].join(' ')
 
 export const SWAP = 'Swap to handoff'
-export const HANDOFF_SWAP = 'Write handoff, swap'
 export const SEND = 'Send as is'
 export const FRESH = 'Fresh session'
 export const LOAD = 'Load it'

@@ -267,7 +267,7 @@ test('a handoff whose turn count no longer matches is not swapped to', async ($,
   const entered = await $.prompt.submit({ text: 'go on', ...typed })
 
   expect(entered).toEqual({ text: 'go on' })
-  expect(world.asks.map(ask => ask.labels)).toEqual([['Write handoff, swap', 'Send as is', 'Fresh session']])
+  expect(world.asks.map(ask => ask.labels)).toEqual([['Send as is', 'Fresh session']])
   expect(world.compactions).toEqual([])
   expect(world.forks).toBe(0)
 })
