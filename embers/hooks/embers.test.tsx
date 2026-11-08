@@ -1,7 +1,7 @@
-import type { HandoffRecord } from '../types'
-import type { Engine } from 'claude-code/testing'
 import type { ModelUsage, On, SessionCompactInput } from 'claude-code'
+import type { Engine } from 'claude-code/testing'
 import { expect, mock, test } from 'claude-code/testing'
+import type { HandoffRecord } from '../types'
 
 const ROOT = '/work/repo'
 const SESSION = 'session-1'
@@ -34,6 +34,8 @@ type World = {
   contextTokens: number | undefined
   answer: string
   forks: number
+  /** While set, a fork in flight waits for it. */
+  forkGate: Promise<void> | undefined
   asks: { question: string; labels: string[] }[]
   compactions: SessionCompactInput[]
   toasts: string[]
@@ -53,6 +55,7 @@ function engine(on: On, overrides: Partial<World> = {}): World {
     contextTokens: 100_000,
     answer: 'Send as is',
     forks: 0,
+    forkGate: undefined,
     asks: [],
     compactions: [],
     toasts: [],
@@ -84,7 +87,13 @@ function engine(on: On, overrides: Partial<World> = {}): World {
           categories: [
             { name: 'System prompt', tokens: 8000, color: 'x', isDeferred: false, kind: 'used' },
             { name: 'System tools', tokens: 12_000, color: 'x', isDeferred: false, kind: 'used' },
-            { name: 'Messages', tokens: (world.contextTokens ?? 20_000) - 20_000, color: 'x', isDeferred: false, kind: 'used' },
+            {
+              name: 'Messages',
+              tokens: (world.contextTokens ?? 20_000) - 20_000,
+              color: 'x',
+              isDeferred: false,
+              kind: 'used',
+            },
             { name: 'Free space', tokens: 80_000, color: 'x', isDeferred: false, kind: 'free' },
           ],
           totalTokens: world.contextTokens ?? 20_000,
@@ -107,8 +116,9 @@ function engine(on: On, overrides: Partial<World> = {}): World {
   on('process.run', () => ({
     value: { exitCode: 0, stdout: 'main\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
   }))
-  on('model.fork', () => {
+  on('model.fork', async () => {
     world.forks += 1
+    await world.forkGate
     return { value: { isAnswered: true, text: 'HANDOFF: release v2 is next', usage: WARM } }
   })
   on('ui.toast', (_, e) => {
@@ -145,7 +155,7 @@ function engine(on: On, overrides: Partial<World> = {}): World {
     const { Text } = $.ui.resolve(e)
     return <Text>engine</Text>
   })
-  // eslint-disable-next-line require-yield
+  // biome-ignore lint/correctness/useYield: a stream that answers with no parts
   on('turn.step', async function* (_, e) {
     return {
       turnId: e.turnId,
@@ -158,7 +168,6 @@ function engine(on: On, overrides: Partial<World> = {}): World {
   })
   return world
 }
-
 
 /** `$.store` beneath the plugin, held in a Map the test reads. */
 function memoryStore(on: On, entries: Record<string, unknown> = {}): Map<string, unknown> {
@@ -231,6 +240,19 @@ const hhmm = (ms: number): string => new Date(ms).toTimeString().slice(0, 5)
 const start = { cwd: ROOT, surface: 'terminal', isInteractive: true } as const
 const turnEnd = { answer: '', durationMs: 1, isAborted: false, turnId: 't', reason: 'answer' } as const
 const typed = { wait: false, origin: { kind: 'composer' } } as const
+const MODEL_SWITCH = {
+  from_model: 'claude-test',
+  to_model: 'claude-test',
+  requested_model: null,
+  source: 'command',
+  context_tokens: 100_000,
+  prompt_cache_warm: true,
+  cache_ttl: '1h',
+  estimated_cache_write_usd: 0,
+  pricing: 'default',
+} as const
+const slash = (command: string, args = '') =>
+  ({ command, args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 120 } }) as const
 
 function handoff(fields: Partial<HandoffRecord>): HandoffRecord {
   return {
@@ -253,7 +275,14 @@ async function band($: Engine): Promise<string> {
     plugin: 'embers',
     surface: 'terminal',
     component: 'AbovePrompt',
-    props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 120, scroll: { offset: 0, bodyRows: 10 }, view: {} },
+    props: {
+      hasSurvey: false,
+      isWorking: false,
+      maxRows: 10,
+      bodyColumns: 120,
+      scroll: { offset: 0, bodyRows: 10 },
+      view: {},
+    },
   })
   const text = (await ui.find({ type: 'Text', text: /embers/ }))?.text ?? ''
   await ui.unmount()
@@ -348,7 +377,7 @@ test('a resumed session with its handoff on file is offered the swap before any 
 
 test('a /clear typed by the person drops the old band and timer, and the next turn arms again', async ($, on) => {
   const world = engine(on)
-  const clock = mock.clock(on, { now: T0 })
+  const clock = manualClock(on, T0)
   memoryStore(on)
   const startOver = stateStartsOver(on)
 
@@ -356,10 +385,11 @@ test('a /clear typed by the person drops the old band and timer, and the next tu
   await $.turn.complete(turnEnd)
   expect(await band($)).toContain('embers  warm  handoff at')
   await $.session.end({ reason: 'clear', sessionId: SESSION, resume: { id: SESSION } })
+  expect(clock.waits.filter(wait => wait.isLive())).toEqual([])
   startOver()
 
   expect(await band($)).toBe('')
-  await clock.advance(55 * MINUTE)
+  clock.now = T0 + 55 * MINUTE
   expect(world.forks).toBe(0)
   expect(world.toasts).toEqual([])
 
@@ -372,7 +402,12 @@ test('/embers off holds after a /clear, which starts the state over', async ($, 
   const clock = mock.clock(on, { now: T0 })
   memoryStore(on)
   const startOver = stateStartsOver(on)
-  const off = { command: 'embers', args: 'off', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 120 } } as const
+  const off = {
+    command: 'embers',
+    args: 'off',
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: false, columns: 120 },
+  } as const
 
   await $.session.start(start)
   await $.command.run(off)
@@ -383,6 +418,31 @@ test('/embers off holds after a /clear, which starts the state over', async ($, 
   expect(await band($)).toBe('')
   await clock.advance(55 * MINUTE)
   expect(world.forks).toBe(0)
+})
+
+test('/embers on undoes /embers off, even after a /clear started the state over', async ($, on) => {
+  const world = engine(on)
+  const clock = mock.clock(on, { now: T0 })
+  memoryStore(on)
+  const startOver = stateStartsOver(on)
+  const embers = (args: 'on' | 'off') =>
+    ({
+      command: 'embers',
+      args,
+      origin: { kind: 'composer' },
+      presentation: { isFullscreen: false, columns: 120 },
+    }) as const
+
+  await $.session.start(start)
+  await $.command.run(embers('off'))
+  await $.session.end({ reason: 'clear', sessionId: SESSION, resume: { id: SESSION } })
+  startOver()
+  await $.command.run(embers('on'))
+  await $.turn.complete(turnEnd)
+
+  expect(await band($)).toBe(`embers  warm  handoff at ${hhmm(T0 + 55 * MINUTE)}`)
+  await clock.advance(55 * MINUTE)
+  expect(world.forks).toBe(1)
 })
 
 test('the start offer shows only at a fresh interactive start, and not again after Skip', async ($, on) => {
@@ -580,7 +640,12 @@ test('/embers on a cold cache asks before a fork that rereads the whole context'
   const world = engine(on, { answer: 'Cancel', surfaces: [] })
   const clock = mock.clock(on, { now: T0 })
   memoryStore(on)
-  const embers = { command: 'embers', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 120 } } as const
+  const embers = {
+    command: 'embers',
+    args: '',
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: false, columns: 120 },
+  } as const
 
   await $.session.start({ ...start, isInteractive: false })
   await $.turn.complete(turnEnd)
@@ -595,26 +660,54 @@ test('/embers on a cold cache asks before a fork that rereads the whole context'
   expect(written.text).toStartWith('Handoff written')
 })
 
-test('a userConfig reload while armed re-arms the timer the reload lost, once', { options: { marginMinutes: 10 } }, async ($, on) => {
-  const world = engine(on)
-  const clock = manualClock(on, T0)
-  memoryStore(on)
+test('/embers after a model change asks before forking; a resumed touch that names no model does not', async ($, on) => {
+  const world = engine(on, { answer: 'Cancel', surfaces: [] })
+  const clock = mock.clock(on, { now: T0 })
+  memoryStore(on, { [KEY]: handoff({}) })
+  const embers = {
+    command: 'embers',
+    args: '',
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: false, columns: 120 },
+  } as const
 
-  await $.session.start(start)
+  await $.session.start({ ...start, isInteractive: false })
+  await clock.set(T0 + 10 * MINUTE)
+  expect((await $.command.run(embers)).text).toStartWith('Handoff written')
+  expect(world.asks).toEqual([])
+
   await $.turn.complete(turnEnd)
-  clock.now = T0 + 20 * MINUTE
-  // A reload starts the module over: its timer is gone, `$.state` survived.
-  for (const wait of clock.waits) wait.lose()
-  await $.session.start(start)
-
-  expect(await band($)).toBe(`embers  warm  handoff at ${hhmm(T0 + 50 * MINUTE)}`)
-  const live = clock.waits.filter(wait => wait.isLive())
-  expect(live.map(wait => wait.due)).toEqual([T0 + 50 * MINUTE])
-  clock.now = T0 + 50 * MINUTE
-  for (const wait of live) wait.fire()
-  await drain()
+  world.model = 'claude-other'
+  await clock.set(T0 + 20 * MINUTE)
+  expect(await $.command.run(embers)).toEqual({ text: 'No handoff written.' })
+  expect(world.asks).toHaveLength(1)
   expect(world.forks).toBe(1)
 })
+
+test(
+  'a userConfig reload while armed re-arms the timer the reload lost, once',
+  { options: { marginMinutes: 10 } },
+  async ($, on) => {
+    const world = engine(on)
+    const clock = manualClock(on, T0)
+    memoryStore(on)
+
+    await $.session.start(start)
+    await $.turn.complete(turnEnd)
+    clock.now = T0 + 20 * MINUTE
+    // A reload starts the module over: its timer is gone, `$.state` survived.
+    for (const wait of clock.waits) wait.lose()
+    await $.session.start(start)
+
+    expect(await band($)).toBe(`embers  warm  handoff at ${hhmm(T0 + 50 * MINUTE)}`)
+    const live = clock.waits.filter(wait => wait.isLive())
+    expect(live.map(wait => wait.due)).toEqual([T0 + 50 * MINUTE])
+    clock.now = T0 + 50 * MINUTE
+    for (const wait of live) wait.fire()
+    await drain()
+    expect(world.forks).toBe(1)
+  },
+)
 
 test('/compact typed by the person reaches core, even with marker-like instructions', async ($, on) => {
   const world = engine(on)
@@ -625,6 +718,133 @@ test('/compact typed by the person reaches core, even with marker-like instructi
   await $.session.compact({ trigger: 'manual', messages: [], instructions: `embers:${T0}` })
 
   expect(world.compactions.map(e => e.instructions)).toEqual([`embers:${T0}`])
+})
+
+test('a fork overtaken by a turn, /effort or a reload stores nothing, and /embers is refused while one runs', async ($, on) => {
+  const world = engine(on)
+  mock.clock(on, { now: T0 })
+  const store = memoryStore(on)
+
+  async function overtaken(moveOn: () => Promise<void>): Promise<void> {
+    let release = (): void => {}
+    world.forkGate = new Promise<void>(resolve => {
+      release = resolve
+    })
+    const running = $.command.run(slash('embers'))
+    await drain()
+    expect(await band($)).toBe('embers  writing handoff…')
+    expect((await $.command.run(slash('embers'))).text).toContain('is being written')
+    await moveOn()
+    release()
+    expect((await running).text).toContain('the conversation moved on')
+    expect(store.has(KEY)).toBe(false)
+  }
+
+  await $.session.start(start)
+  await $.turn.complete(turnEnd)
+  await overtaken(async () => {
+    world.turns = 4
+    await $.turn.complete(turnEnd)
+    expect(await band($)).toContain('embers  warm  handoff at')
+  })
+  await overtaken(async () => {
+    await $.session.start(start)
+    expect(await band($)).toBe('')
+  })
+  await overtaken(async () => {
+    await $.command.run(slash('effort', 'low'))
+    expect(await band($)).toBe('')
+  })
+  expect(world.forks).toBe(3)
+})
+
+test(
+  'a session under minContextTokens gets no band, no fork at the deadline and no cold ask',
+  { options: { minSavingTokens: 0 } },
+  async ($, on) => {
+    const world = engine(on, { contextTokens: 30_000 })
+    const clock = mock.clock(on, { now: T0 })
+    memoryStore(on)
+
+    await $.session.start(start)
+    await $.turn.complete(turnEnd)
+    expect(await band($)).toBe('')
+    await clock.advance(55 * MINUTE)
+    expect(world.forks).toBe(0)
+
+    // Asked for by hand, the fork runs; the band stays quiet about a small session.
+    await $.command.run(slash('embers'))
+    expect(world.forks).toBe(1)
+    expect(await band($)).toBe('')
+
+    await clock.set(T0 + 180 * MINUTE)
+    expect(await $.prompt.submit({ text: 'go on', ...typed })).toEqual({ text: 'go on' })
+    expect(world.asks).toEqual([])
+  },
+)
+
+test('/effort, a compaction or a model switch disarms the handoff, and a timer already firing when /embers off lands forks nothing', async ($, on) => {
+  const world = engine(on)
+  const clock = manualClock(on, T0)
+  memoryStore(on)
+  let heldRead: Promise<void> | undefined
+  on('state.get', async (_, e, next) => {
+    const gate = heldRead
+    heldRead = undefined
+    await gate
+    return next(e)
+  })
+  on('classic.PostModelSwitch', () => ({}))
+  const resets: (() => Promise<unknown>)[] = [
+    () => $.command.run(slash('effort', 'low')),
+    () => $.session.compact({ trigger: 'manual', messages: [{ role: 'user', text: 'earlier', toolUses: [] }] }),
+    () => $.classic.PostModelSwitch(MODEL_SWITCH),
+  ]
+
+  await $.session.start(start)
+  for (const reset of resets) {
+    await $.turn.complete(turnEnd)
+    expect(await band($)).toContain('embers  warm  handoff at')
+    await reset()
+    expect(await band($)).toBe('')
+    expect(clock.waits.filter(wait => wait.isLive())).toEqual([])
+  }
+
+  // The timer has fired and its read of the state waits behind the off.
+  await $.turn.complete(turnEnd)
+  const [armed] = clock.waits.filter(wait => wait.isLive())
+  let release = (): void => {}
+  heldRead = new Promise<void>(resolve => {
+    release = resolve
+  })
+  clock.now = T0 + 55 * MINUTE
+  armed?.fire()
+  await drain()
+  await $.command.run(slash('embers', 'off'))
+  release()
+  await drain()
+  expect(world.forks).toBe(0)
+})
+
+test('past its cap a root drops only superseded handoffs older than twice the TTL', async ($, on) => {
+  engine(on)
+  mock.clock(on, { now: T0 })
+  const key = (sessionId: string): string => `handoff:${ROOT}:${sessionId}`
+  const crowded = { branch: 'crowded' }
+  const heads = Array.from({ length: 9 }, (_, i) => `head-${i}`)
+  const kept = [...heads, 'newest', 'young'].map(key)
+  const store = memoryStore(on, {
+    ...Object.fromEntries(
+      heads.map(id => [key(id), handoff({ sessionId: id, branch: id, writtenAt: T0 - 500 * MINUTE })]),
+    ),
+    [key('newest')]: handoff({ ...crowded, sessionId: 'newest', writtenAt: T0 - MINUTE }),
+    [key('young')]: handoff({ ...crowded, sessionId: 'young', writtenAt: T0 - 90 * MINUTE }),
+    [key('old')]: handoff({ ...crowded, sessionId: 'old', writtenAt: T0 - 180 * MINUTE }),
+  })
+
+  await $.session.start({ ...start, isInteractive: false })
+
+  expect([...store.keys()].sort()).toEqual(kept.sort())
 })
 
 test('store retention drops bad and expired records, and keeps superseded ones while the root is under its cap', async ($, on) => {

@@ -1,12 +1,7 @@
-import type {
-  ModelUsage,
-  PluginOptions,
-  PromptSubmitInput,
-  SessionContextBreakdown,
-  SessionMessage,
-} from 'claude-code'
+import type { ModelUsage, PluginOptions, PromptSubmitInput, SessionContextBreakdown, SessionMessage } from 'claude-code'
 
-import type { EmbersRun, HandoffRecord } from '../types'
+import type { Cache, EmbersRun, HandoffRecord, Phase } from '../types'
+import { isOff } from './state'
 
 export const MINUTE = 60_000
 /** A timer that fires this close to the TTL, or later, finds the cache lapsed. */
@@ -14,7 +9,7 @@ export const SLACK_MS = 30_000
 /** The TTLs the API offers, in minutes. */
 export const KNOWN_TTLS = [5, 60]
 
-export const HANDOFF_PROMPT = [
+const HANDOFF_PROMPT = [
   'You have no tools in this reply. Answer straight away, without deliberating.',
   'Write a handoff for this conversation so that it can continue from the handoff alone, without the transcript:',
   'the goal, the decisions made and why, the state of the work (files touched, what is done, what is not),',
@@ -22,15 +17,26 @@ export const HANDOFF_PROMPT = [
   'Plain text, no preamble.',
 ].join(' ')
 
-export const SWAP = 'Swap to handoff'
-export const SEND = 'Send as is'
-export const FRESH = 'Fresh session'
+/** The handoff request; the person's own instructions, when set, are its last sentence. */
+export const handoffPrompt = (instructions: string): string =>
+  instructions.trim() === '' ? HANDOFF_PROMPT : `${HANDOFF_PROMPT} ${instructions.trim()}`
+
+export type ColdChoice = 'swap' | 'send' | 'fresh'
+export const COLD_LABELS: Record<ColdChoice, string> = {
+  swap: 'Swap to handoff',
+  send: 'Send as is',
+  fresh: 'Fresh session',
+}
+/** The choice behind an answer; free text typed under "Other" sends the prompt. */
+export const coldChoiceOf = (label: string): ColdChoice =>
+  label === COLD_LABELS.swap ? 'swap' : label === COLD_LABELS.fresh ? 'fresh' : 'send'
+
 export const LOAD = 'Load it'
 export const SKIP = 'Skip'
 export const WRITE = 'Write it'
 export const CANCEL = 'Cancel'
 
-export type ColdMode = 'ask' | 'swap' | 'send' | 'off'
+export type ColdMode = 'ask' | 'swap' | 'send'
 export type Config = {
   ttlMinutes: number
   marginMinutes: number
@@ -39,6 +45,7 @@ export type Config = {
   coldMode: ColdMode
   offerOnStart: boolean
   showBand: boolean
+  handoffInstructions: string
 }
 
 export function readConfig(options: PluginOptions): Config {
@@ -52,9 +59,11 @@ export function readConfig(options: PluginOptions): Config {
     if (typeof value !== 'boolean') throw new Error(`embers: ${key} is not a boolean`)
     return value
   }
+  const instructions = options.handoffInstructions
+  if (typeof instructions !== 'string') throw new Error('embers: handoffInstructions is not a string')
   const mode = options.coldMode
-  if (mode !== 'ask' && mode !== 'swap' && mode !== 'send' && mode !== 'off') {
-    throw new Error('embers: coldMode is not ask, swap, send or off')
+  if (mode !== 'ask' && mode !== 'swap' && mode !== 'send') {
+    throw new Error('embers: coldMode is not ask, swap or send')
   }
   return {
     ttlMinutes: num('ttlMinutes'),
@@ -64,6 +73,7 @@ export function readConfig(options: PluginOptions): Config {
     coldMode: mode,
     offerOnStart: bool('offerOnStart'),
     showBand: bool('showBand'),
+    handoffInstructions: instructions,
   }
 }
 
@@ -115,9 +125,10 @@ export function compose(record: HandoffRecord): string {
   return `${head}\n\n${record.text}${tail}`
 }
 
+/** A fork's cost in words: every toast and command shows it through here. */
 export function forkFigures(usage: ModelUsage): string {
-  const cold = isWarmRead(usage) ? '' : ' (the cache was cold)'
-  return `cache_read_input_tokens ${k(usage.cache_read_input_tokens)}, cache_creation_input_tokens ${k(usage.cache_creation_input_tokens)}, output_tokens ${k(usage.output_tokens)}${cold}`
+  const cold = isWarmRead(usage) ? '' : ' (cold)'
+  return `read ${k(usage.cache_read_input_tokens)} from cache, wrote ${k(usage.cache_creation_input_tokens)}, ${k(usage.output_tokens)} out${cold}`
 }
 
 /** A prompt the person typed at an idle session; everything else passes untouched. */
@@ -128,19 +139,42 @@ export const isPersonPrompt = (e: PromptSubmitInput): boolean =>
   (e.origin.kind === 'composer' || e.origin.kind === 'bridge')
 
 export function bandLine(s: EmbersRun, config: Config): string | undefined {
-  if (s.isOff || s.contextTokens === undefined || s.contextTokens < config.minContextTokens) {
-    return undefined
+  const { phase } = s
+  const tokens = phase.cache?.contextTokens
+  if (isOff(s) || tokens === undefined || tokens < config.minContextTokens) return undefined
+  switch (phase.kind) {
+    case 'idle':
+      return undefined
+    case 'armed': {
+      const lapse =
+        s.lapse !== undefined && s.lapse.isPending !== true
+          ? `  cache lapsed after ${s.lapse.afterMinutes}m  margin now ${s.lapse.marginMinutes}m`
+          : ''
+      return `embers  warm  handoff at ${clockTime(phase.deadline)}${lapse}`
+    }
+    case 'writing':
+      return 'embers  writing handoff…'
+    case 'ready':
+      return `embers  handoff ready  ${clockTime(phase.handoffAt)}, ${k(tokens)} tokens, warm until ${clockTime(phase.cache.warmUntil)}`
+    default:
+      return phase satisfies never
   }
-  const lapse =
-    s.lapse !== undefined && s.lapse.isPending !== true
-      ? `  cache lapsed after ${s.lapse.afterMinutes}m  margin now ${s.lapse.marginMinutes}m`
-      : ''
-  if (s.phase === 'armed' && s.deadline !== undefined) {
-    return `embers  warm  handoff at ${clockTime(s.deadline)}${lapse}`
+}
+
+export function phaseWords(phase: Phase): string {
+  switch (phase.kind) {
+    case 'idle':
+      return 'nothing scheduled'
+    case 'armed':
+      return `handoff scheduled for ${clockTime(phase.deadline)}`
+    case 'writing':
+      return 'writing a handoff'
+    case 'ready':
+      return `handoff ready since ${clockTime(phase.handoffAt)}`
   }
-  if (s.phase === 'writing') return 'embers  writing handoff…'
-  if (s.phase === 'ready' && s.handoffAt !== undefined && s.warmUntil !== undefined) {
-    return `embers  handoff ready  ${clockTime(s.handoffAt)}, ${k(s.contextTokens)} tokens, warm until ${clockTime(s.warmUntil)}`
-  }
-  return undefined
+}
+
+export function cacheWords(cache: Cache | undefined, now: number): string {
+  if (cache === undefined) return 'unknown'
+  return `${now < cache.warmUntil ? 'warm until' : 'cold since'} ${clockTime(cache.warmUntil)}`
 }

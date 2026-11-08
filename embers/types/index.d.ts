@@ -1,5 +1,43 @@
-/** Where the session stands between turns. */
-export type Phase = 'idle' | 'armed' | 'writing' | 'ready'
+/** What is known about the main thread's prompt-cache entry. */
+export type Cache = {
+  /** Epoch ms of the last main-loop turn end, or of a later fork that read the cache. */
+  touchedAt: number
+  /** The model at `touchedAt`; another model has no entry to keep warm or to judge the TTL by. Absent when the touch came from a handoff. */
+  model: string | undefined
+  /** `context.tokens` read at the last main-loop turn end. */
+  contextTokens: number | undefined
+  /** `touchedAt` plus the TTL in force. */
+  warmUntil: number
+}
+
+/**
+ * Where the session stands between turns. A manual `/embers` can write with
+ * no touch known, so `writing` alone of the busy phases may lack a `cache`.
+ */
+export type Phase =
+  | { kind: 'idle'; cache?: Cache }
+  | { kind: 'armed'; cache: Cache; deadline: number }
+  | { kind: 'writing'; cache?: Cache }
+  | { kind: 'ready'; cache: Cache; handoffAt: number }
+
+/**
+ * A cold read inside the TTL and the margin it would leave. The first is held
+ * `isPending`, from the idle period that began at `touch` on `model`; a second
+ * on that model, in a later idle period, stores the `ttl:<model>` override and
+ * drops `isPending`. The band shows only a stored one.
+ */
+export type Lapse = { afterMinutes: number; marginMinutes: number; touch?: number; model?: string; isPending?: boolean }
+
+/** A fork that reached the API. `usage` is the engine's `ModelUsage`, spelled out: a contract cannot import. */
+export type LastFork = {
+  at: number
+  usage: {
+    input_tokens: number
+    output_tokens: number
+    cache_read_input_tokens: number
+    cache_creation_input_tokens: number
+  }
+}
 
 /**
  * The session's embers state, held in `$.state`: it survives a hot reload and
@@ -7,29 +45,13 @@ export type Phase = 'idle' | 'armed' | 'writing' | 'ready'
  */
 export type EmbersRun = {
   phase: Phase
-  /** Epoch ms of the last main-loop turn end, or of a later fork that read the cache. */
-  lastCacheTouch?: number
-  /** The model at `lastCacheTouch`; another model has no cache entry to keep warm or to judge the TTL by. */
-  modelAtTouch?: string
-  /** `context.tokens` read at the last main-loop turn end; absent after a compaction. */
-  contextTokens?: number
-  /** Epoch ms the handoff timer fires, while `armed`. */
-  deadline?: number
-  /** `lastCacheTouch` plus the TTL in force, for the band. */
-  warmUntil?: number
-  /** When the handoff on file was written, while `ready`. */
-  handoffAt?: number
   /** `/embers off` for this session. */
   isOff: boolean
   /** Whether the start offer was shown this session. */
   startOffered: boolean
-  /**
-   * A cold read inside the TTL and the margin it would leave. The first is
-   * held `isPending`, from the idle period that began at `touch` on `model`; a
-   * second on that model, in a later idle period, stores the `ttl:<model>`
-   * override and drops `isPending`. The band shows only a stored one.
-   */
-  lapse?: { afterMinutes: number; marginMinutes: number; touch?: number; model?: string; isPending?: boolean }
+  lapse?: Lapse
+  /** When the last fork ended and what it cost. */
+  lastFork?: LastFork
 }
 
 /** `$.store` key `handoff:<root>:<sessionId>`. */
