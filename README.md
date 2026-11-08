@@ -4,7 +4,7 @@ A Claude Code mod that keeps your context warm.
 
 Claude's prompt cache lapses after a quiet hour (five minutes under some plans). Come back to a long session after that and your next message pays to rebuild the whole prefix. embers writes a handoff shortly before the cache lapses, while reading the prefix is still cheap, and when you return cold it swaps the conversation to that handoff instead of reloading everything.
 
-Status: in design. See `docs/DESIGN.md`.
+Status: first implementation on `feat/mod`, not released. `docs/DESIGN.md` is the design; `docs/briefs/02-status.md` lists where the code departs from it and what is not yet verified.
 
 ## Layout
 
