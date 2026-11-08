@@ -16,6 +16,7 @@ import {
 import type { ColdChoice, Config } from './shared'
 import {
   COLD_LABELS,
+  cacheWords,
   clockTime,
   coldChoiceOf,
   compose,
@@ -31,6 +32,7 @@ import {
   lastAssistantText,
   MINUTE,
   minutesOf,
+  phaseWords,
   SKIP,
   SLACK_MS,
 } from './shared'
@@ -42,6 +44,7 @@ import {
   forkSkipped,
   forkStarted,
   forkWritten,
+  isOff,
   lapseObserved,
   offerMade,
   prefixReplaced,
@@ -103,7 +106,7 @@ export async function writeHandoff($: EngineInterface, config: Config): Promise<
   const reply = await $.model.fork({ prompt: HANDOFF_PROMPT })
   const now = await $.clock.now()
   if (!reply.isAnswered) {
-    await apply($, forkFailed)
+    await apply($, forkFailed, reply.reason === 'nothing-to-fork' ? undefined : { at: now, usage: reply.usage })
     return reply.reason === 'nothing-to-fork'
       ? { kind: 'none', reason: reply.reason }
       : { kind: 'none', reason: reply.reason, usage: reply.usage }
@@ -111,7 +114,7 @@ export async function writeHandoff($: EngineInterface, config: Config): Promise<
   const [sessionAfter, turnsAfter, s] = await Promise.all([$.session.id(), $.session.turns(), readRun($)])
   if (sessionAfter !== sessionId || turnsAfter !== turns || s.phase.kind !== 'writing') {
     // A turn or a /clear that moved on set its own phase; only a stale `writing` is ours.
-    await apply($, forkFailed)
+    await apply($, forkFailed, { at: now, usage: reply.usage })
     return { kind: 'none', reason: 'the conversation moved on while it was written', usage: reply.usage }
   }
   const record: HandoffRecord = {
@@ -128,7 +131,7 @@ export async function writeHandoff($: EngineInterface, config: Config): Promise<
   const ttl = await ttlMs($, config)
   await $.store.set(handoffKey(root, sessionId), record)
   await sweep($, now, ttl)
-  await apply($, forkWritten, { now, ttl, isWarm: isWarmRead(reply.usage), contextTokens })
+  await apply($, forkWritten, { now, ttl, isWarm: isWarmRead(reply.usage), contextTokens, usage: reply.usage })
   return { kind: 'written', record, usage: reply.usage }
 }
 
@@ -349,20 +352,29 @@ export async function offerHandoff($: EngineInterface, config: Config): Promise<
 }
 
 export async function status($: EngineInterface, config: Config): Promise<string> {
-  const [root, sessionId, model, s] = await Promise.all([
+  const [root, sessionId, model, s, now] = await Promise.all([
     $.session.root(),
     $.session.id(),
     $.session.model(),
     readRun($),
+    $.clock.now(),
   ])
   const override = await readTtl($, ttlKey(model))
   const ttl = override
-    ? `TTL ${override.observedMinutes}m for ${model}, observed ${dateTime(override.observedAt)}`
-    : `TTL ${config.ttlMinutes}m for ${model} (configured)`
+    ? `${override.observedMinutes}m for ${model}, observed ${dateTime(override.observedAt)}`
+    : `${config.ttlMinutes}m for ${model} (configured)`
+  const fork = s.lastFork ? `${clockTime(s.lastFork.at)}, ${forkFigures(s.lastFork.usage)}` : 'none this session'
   const rows = (await listHandoffs($, root)).map(
     record =>
       `  ${dateTime(record.writtenAt)}  ${record.branch === '' ? '(no branch)' : record.branch}  ${record.turns} turns  ${k(record.contextTokens)} tokens  ${record.sessionId === sessionId ? 'this session' : record.sessionId.slice(0, 8)}`,
   )
   const handoffs = rows.length === 0 ? 'No handoffs for this root.' : `Handoffs for ${root}:\n${rows.join('\n')}`
-  return `${ttl}. ${s.isOff ? 'Off for this session.' : `Phase: ${s.phase.kind}.`}\n${handoffs}`
+  return [
+    `embers is ${isOff(s) ? 'off' : 'on'}.`,
+    `Cache: ${cacheWords(s.phase.cache, now)}.`,
+    `Phase: ${phaseWords(s.phase)}.`,
+    `Last fork: ${fork}.`,
+    `TTL: ${ttl}.`,
+    handoffs,
+  ].join('\n')
 }

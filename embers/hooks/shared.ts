@@ -1,6 +1,6 @@
 import type { ModelUsage, PluginOptions, PromptSubmitInput, SessionContextBreakdown, SessionMessage } from 'claude-code'
 
-import type { EmbersRun, HandoffRecord } from '../types'
+import type { Cache, EmbersRun, HandoffRecord, Phase } from '../types'
 import { isOff } from './state'
 
 export const MINUTE = 60_000
@@ -117,9 +117,10 @@ export function compose(record: HandoffRecord): string {
   return `${head}\n\n${record.text}${tail}`
 }
 
+/** A fork's cost in words: every toast and command shows it through here. */
 export function forkFigures(usage: ModelUsage): string {
-  const cold = isWarmRead(usage) ? '' : ' (the cache was cold)'
-  return `cache_read_input_tokens ${k(usage.cache_read_input_tokens)}, cache_creation_input_tokens ${k(usage.cache_creation_input_tokens)}, output_tokens ${k(usage.output_tokens)}${cold}`
+  const cold = isWarmRead(usage) ? '' : ' (cold)'
+  return `read ${k(usage.cache_read_input_tokens)} from cache, wrote ${k(usage.cache_creation_input_tokens)}, ${k(usage.output_tokens)} out${cold}`
 }
 
 /** A prompt the person typed at an idle session; everything else passes untouched. */
@@ -150,4 +151,22 @@ export function bandLine(s: EmbersRun, config: Config): string | undefined {
     default:
       return phase satisfies never
   }
+}
+
+export function phaseWords(phase: Phase): string {
+  switch (phase.kind) {
+    case 'idle':
+      return 'nothing scheduled'
+    case 'armed':
+      return `handoff scheduled for ${clockTime(phase.deadline)}`
+    case 'writing':
+      return 'writing a handoff'
+    case 'ready':
+      return `handoff ready since ${clockTime(phase.handoffAt)}`
+  }
+}
+
+export function cacheWords(cache: Cache | undefined, now: number): string {
+  if (cache === undefined) return 'unknown'
+  return `${now < cache.warmUntil ? 'warm until' : 'cold since'} ${clockTime(cache.warmUntil)}`
 }

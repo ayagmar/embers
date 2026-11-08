@@ -1,7 +1,7 @@
-import type { EngineInterface } from 'claude-code'
+import type { EngineInterface, ModelUsage } from 'claude-code'
 import { atom, read, update } from 'claude-code'
 
-import type { Cache, EmbersRun, Lapse, Phase } from '../types'
+import type { Cache, EmbersRun, Lapse, LastFork, Phase } from '../types'
 import { inProcess } from './process'
 
 export const INITIAL: EmbersRun = { phase: { kind: 'idle' }, isOff: false, startOffered: false }
@@ -56,8 +56,10 @@ export const forkStarted = (r: EmbersRun): EmbersRun => ({
 })
 
 /** The fork ended with no handoff, or a reload lost it. Only a stale `writing` is ours to end. */
-export const forkFailed = (r: EmbersRun): EmbersRun =>
-  r.phase.kind === 'writing' ? { ...r, phase: idle(r.phase.cache) } : r
+export function forkFailed(r: EmbersRun, lastFork?: LastFork): EmbersRun {
+  const known = lastFork === undefined ? r : { ...r, lastFork }
+  return known.phase.kind === 'writing' ? { ...known, phase: idle(known.phase.cache) } : known
+}
 
 /**
  * The handoff is on file. A warm fork renews the cache; a cold one leaves the
@@ -65,16 +67,20 @@ export const forkFailed = (r: EmbersRun): EmbersRun =>
  */
 export function forkWritten(
   r: EmbersRun,
-  input: { now: number; ttl: number; isWarm: boolean; contextTokens: number },
+  input: { now: number; ttl: number; isWarm: boolean; contextTokens: number; usage: ModelUsage },
 ): EmbersRun {
-  if (r.phase.kind !== 'writing') return r
-  const { cache } = r.phase
   const { now, ttl } = input
+  const known: EmbersRun = { ...r, lastFork: { at: now, usage: input.usage } }
+  if (known.phase.kind !== 'writing') return known
+  const { cache } = known.phase
   const renewed: Cache = cache
     ? { ...cache, touchedAt: now, warmUntil: now + ttl }
     : { touchedAt: now, model: undefined, contextTokens: input.contextTokens, warmUntil: now + ttl }
   const touched = input.isWarm ? renewed : cache && { ...cache, warmUntil: cache.touchedAt + ttl }
-  return { ...r, phase: touched === undefined ? idle(undefined) : { kind: 'ready', cache: touched, handoffAt: now } }
+  return {
+    ...known,
+    phase: touched === undefined ? idle(undefined) : { kind: 'ready', cache: touched, handoffAt: now },
+  }
 }
 
 /** A touch known from elsewhere than a turn end: a resumed session's own handoff. No later read is judged against it. */

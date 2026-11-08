@@ -28,6 +28,17 @@ export type Phase =
  */
 export type Lapse = { afterMinutes: number; marginMinutes: number; touch?: number; model?: string; isPending?: boolean }
 
+/** A fork that reached the API. `usage` is the engine's `ModelUsage`, spelled out: a contract cannot import. */
+export type LastFork = {
+  at: number
+  usage: {
+    input_tokens: number
+    output_tokens: number
+    cache_read_input_tokens: number
+    cache_creation_input_tokens: number
+  }
+}
+
 /**
  * The session's embers state, held in `$.state`: it survives a hot reload and
  * starts over under the new session id after a `/clear`.
@@ -39,6 +50,8 @@ export type EmbersRun = {
   /** Whether the start offer was shown this session. */
   startOffered: boolean
   lapse?: Lapse
+  /** When the last fork ended and what it cost. */
+  lastFork?: LastFork
 }
 
 /** `$.store` key `handoff:<root>:<sessionId>`. */
