@@ -322,20 +322,35 @@ test('a resumed session with its handoff on file is offered the swap before any 
   expect(session.appended()).toHaveLength(1)
 })
 
-test('a /clear typed by the person drops the old band and timer', async ($, on) => {
+test('a /clear typed by the person drops the old band and timer, and the next turn arms again', async ($, on) => {
   const world = engine(on)
   const clock = mock.clock(on, { now: T0 })
   memoryStore(on)
+  // The host starts `$.state` over under the new session id, with no
+  // `session.start` after it.
+  let isNewSession = false
+  on('state.get', async (_, e, next) => {
+    const read = await next(e)
+    return isNewSession && 'value' in read && read.value !== undefined ? { value: { ...read.value, value: undefined } } : read
+  })
+  on('state.set', (_, e, next) => {
+    isNewSession = false
+    return next(e)
+  })
 
   await $.session.start(start)
   await $.turn.complete(turnEnd)
   expect(await band($)).toContain('embers  warm  handoff at')
   await $.session.end({ reason: 'clear', sessionId: SESSION, resume: { id: SESSION } })
+  isNewSession = true
 
   expect(await band($)).toBe('')
   await clock.advance(55 * MINUTE)
   expect(world.forks).toBe(0)
   expect(world.toasts).toEqual([])
+
+  await $.turn.complete(turnEnd)
+  expect(await band($)).toBe(`embers  warm  handoff at ${hhmm(T0 + 110 * MINUTE)}`)
 })
 
 test('the start offer shows only at a fresh interactive start, and not again after Skip', async ($, on) => {

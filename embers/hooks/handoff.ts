@@ -38,7 +38,6 @@ import type { Config } from './shared'
 
 export const INITIAL: EmbersRun = {
   phase: 'idle',
-  isInteractive: false,
   isOff: false,
   startOffered: false,
 }
@@ -54,8 +53,13 @@ export function change($: EngineInterface, fn: (r: EmbersRun) => EmbersRun): Pro
 
 type Written = { record: HandoffRecord; usage: ModelUsage } | { reason: string; usage?: ModelUsage }
 
-// The one value a reload loses; `session.start` re-arms it from `$.state`.
+// Module values outlive a `/clear`, which starts `$.state` over, and start
+// over on a reload, which `$.state` survives.
+// The timer: `session.start` re-arms it from `$.state` after a reload.
 let timer: Timer | undefined
+// A swap or fresh start chosen at a cold prompt is running; a reload ends it.
+let isReshaping = false
+export const reshaping = (): boolean => isReshaping
 
 export function disarm(): void {
   timer?.cancel()
@@ -170,10 +174,8 @@ export async function cleared($: EngineInterface): Promise<void> {
   disarm()
   await change($, r => ({
     ...INITIAL,
-    isInteractive: r.isInteractive,
     isOff: r.isOff,
     startOffered: r.startOffered,
-    reshaping: r.reshaping,
   }))
 }
 
@@ -271,7 +273,7 @@ export async function coldPrompt(
   // hook holds, so the prompt is dropped (the engine puts it back in the box)
   // and the session is reshaped from a timer for the person to send it again.
   const plan = { swapTo: choice === SWAP ? matching : undefined, tokens, fixed }
-  await change($, r => ({ ...r, reshaping: true }))
+  isReshaping = true
   $.clock.after(0, () => {
     void reshape($, plan).catch(error =>
       $.ui.log(`embers: ${choice} failed: ${String(error)}`, { to: 'debug' }),
@@ -296,7 +298,8 @@ async function reshape($: EngineInterface, plan: Reshape): Promise<void> {
     await swap($, plan.swapTo, plan.tokens, plan.fixed)
   } finally {
     // The person has chosen: the prompt they send next is not asked about again.
-    await change($, r => ({ ...r, lastCacheTouch: undefined, reshaping: undefined }))
+    isReshaping = false
+    await change($, r => ({ ...r, lastCacheTouch: undefined }))
   }
 }
 

@@ -1,7 +1,10 @@
 /** Where the session stands between turns. */
 export type Phase = 'idle' | 'armed' | 'writing' | 'ready'
 
-/** The session's embers state, held in `$.state`; survives a hot reload. */
+/**
+ * The session's embers state, held in `$.state`: it survives a hot reload and
+ * starts over under the new session id after a `/clear`.
+ */
 export type EmbersRun = {
   phase: Phase
   /** Epoch ms of the last main-loop turn end, or of a later fork that read the cache. */
@@ -16,14 +19,10 @@ export type EmbersRun = {
   warmUntil?: number
   /** When the handoff on file was written, while `ready`. */
   handoffAt?: number
-  /** Set by `session.start`: false under `-p` and the SDK. */
-  isInteractive: boolean
   /** `/embers off` for this session. */
   isOff: boolean
   /** Whether the start offer was shown this session. */
   startOffered: boolean
-  /** A swap or fresh start chosen at a cold prompt is running; prompts are refused until it ends. */
-  reshaping?: boolean
   /**
    * A cold read inside the TTL and the margin it would leave. The first is
    * held `isPending`, from the idle period that began at `touch` on `model`; a

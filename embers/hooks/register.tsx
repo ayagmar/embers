@@ -9,6 +9,7 @@ import {
   observeTtl,
   offerHandoff,
   readRun,
+  reshaping,
   seedFromHandoff,
   status,
   ttlMs,
@@ -19,6 +20,9 @@ import { MINUTE, WRITE, CANCEL, bandLine, forkFigures, isPersonPrompt, k, readCo
 
 export const register: Register = (on, options) => {
   const config = readConfig(options)
+  // Set by `session.start`, false under -p and the SDK. Kept here, not in
+  // `$.state`: a `/clear` starts the state over and no `session.start` follows.
+  let isInteractive = false
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -27,13 +31,9 @@ export const register: Register = (on, options) => {
       argumentHint: '[status|off]',
     })
     const [now, ttl] = await Promise.all([$.clock.now(), ttlMs($, config)])
+    isInteractive = e.isInteractive
     // Fires on reload too: the state survived, the timer and any swap in flight did not.
-    const s = await change($, r => ({
-      ...r,
-      isInteractive: e.isInteractive,
-      phase: r.phase === 'writing' ? 'idle' : r.phase,
-      reshaping: undefined,
-    }))
+    const s = await change($, r => ({ ...r, phase: r.phase === 'writing' ? 'idle' : r.phase }))
     if (s.phase === 'armed' && s.deadline !== undefined) arm($, config, now, s.deadline)
     if (s.lastCacheTouch === undefined) await seedFromHandoff($)
     await sweep($, now, ttl)
@@ -50,7 +50,7 @@ export const register: Register = (on, options) => {
   on('prompt.submit', async ($, e, next) => {
     if (!isPersonPrompt(e)) return next(e)
     // Asked again, it would start a second cold fork or send cold under the swap.
-    if ((await readRun($)).reshaping === true) return { drop: 'embers: still swapping; send again when it says done' }
+    if (reshaping()) return { drop: 'embers: still swapping; send again when it says done' }
     disarm()
     const s = await change($, r => ({ ...r, phase: 'idle', deadline: undefined }))
     if (s.isOff || config.coldMode === 'off' || config.coldMode === 'send' || s.lastCacheTouch === undefined) {
@@ -99,7 +99,7 @@ export const register: Register = (on, options) => {
     const margin = marginFor(ttl / MINUTE, config.marginMinutes) * MINUTE
     const s = await change($, r => {
       const isArmed =
-        !r.isOff && r.isInteractive && tokens !== undefined && tokens >= config.minContextTokens
+        !r.isOff && isInteractive && tokens !== undefined && tokens >= config.minContextTokens
       return {
         ...r,
         phase: isArmed ? 'armed' : 'idle',
