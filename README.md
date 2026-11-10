@@ -38,13 +38,16 @@ If you send a prompt after the cache has gone cold, embers asks what to do and s
 
 When a new session starts in a folder where an earlier one left a handoff on the same branch, embers offers to load it. Choose **Load it** or **Skip**.
 
-Each handoff shows a toast with its cost, such as `read 26k from cache, wrote 7.6k, 937 out`.
+After a swap or a load, the handoff is drawn in the transcript as a block you can read, with a line naming the old conversation: `claude --resume <id>` returns to it. If a swap fails partway, a line says what happened.
+
+Each handoff adds a line with its cost, such as `embers: Handoff written; read 26k from cache, wrote 7.6k, 937 out`.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
 | `/embers` | Writes a handoff now, and asks first if the cache is cold. |
+| `/embers show` | Draws this session's handoff, or the one it swapped to, for you to read. The model is not sent it. |
 | `/embers status` | Shows on or off, the cache, the phase, the last fork, the TTL and this folder's handoffs. |
 | `/embers off` | Turns embers off until you run `/embers on` or quit. |
 | `/embers on` | Turns it back on; the next turn to end arms it. |

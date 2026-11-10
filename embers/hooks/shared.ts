@@ -125,6 +125,17 @@ export function compose(record: HandoffRecord): string {
   return `${head}\n\n${record.text}${tail}`
 }
 
+/**
+ * The handoff as the person reads it, in a placed Markdown row. A Markdown
+ * element takes tab and newline as its only control characters.
+ */
+export function handoffView(record: HandoffRecord): string {
+  const where = record.branch === '' ? '' : ` on ${record.branch}`
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: the control characters Markdown refuses are the point
+  const text = record.text.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, '')
+  return `**embers handoff**, written ${dateTime(record.writtenAt)}${where}, ~${k(handoffTokens(record))} tokens\n\n${text}`
+}
+
 /** A fork's cost in words: every toast and command shows it through here. */
 export function forkFigures(usage: ModelUsage): string {
   const cold = isWarmRead(usage) ? '' : ' (cold)'

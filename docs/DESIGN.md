@@ -22,7 +22,7 @@ Two things make it worse:
      - **send**: `next(e)` with the prompt intact; it enters cold and the cache rewarms on that request.
      - **fresh**: the hook drops the prompt and runs `/clear` from `$.clock.after(0, …)`; the person sends it again.
    - Swap and fresh drop the prompt because the host refuses both a compaction and a command under the turn a `prompt.submit` hook holds (`d.ts:3236`). A compaction from the timer instead runs past the calling plugin's own `session.compact` hook, so core would summarize the cold prefix with a model call. `docs/probes/compact-in-prompt-submit` is a kit test that shows both. The engine puts a dropped prompt back in the box by itself; attachments must be pasted again, and the drop reason says so. Until the swap or fresh start ends, a prompt sent again is dropped with `embers: still swapping; send again when it says done`.
-   - The swap's `/clear` gives a new session id. Its toast names `claude --resume <old id>`, which returns to the old conversation, and the handoff text is logged to the transcript, where the person can read it and the model does not.
+   - The swap's `/clear` gives a new session id. A one-line log names `claude --resume <old id>`, which returns to the old conversation, and the handoff is drawn as a Markdown row placed with `$.ui.place`, which the model does not read. A `$.ui.log` line is one line: the terminal replaces newlines and cuts it at 2000 characters, so the handoff never goes through it. A swap that fails says so in a log line; the cache is forgotten only when the `/clear` went through.
    - Without a matching handoff the ask offers only send and fresh. Writing a handoff at that point would itself reread the whole cold prefix P at the cache-write price, the same 1.25 × P that sending pays, and the swap would then write the short prefix S at 1.25 × S on top. Sending leaves P warm, read at 0.1 × P per later request. For P = 100k and S = 25k the swap adds about 31k token-equivalents now to save 7.5k per later request: it pays back only after four or more.
    - The question states each choice's size: `The prompt cache is cold (65m idle). Sending rewrites 100k tokens; swapping to the 12:55 handoff writes ~25k; a fresh session writes ~20k (paste attachments again). What now?` Without a handoff the swap clause is left out.
    - `coldMode` `swap` skips the ask when a matching handoff is on file. `send` never asks. If the ask rejects (dismissed, non-interactive), the prompt is sent.
@@ -35,12 +35,12 @@ Two things make it worse:
 ## Rules that keep it cheap
 
 - One fork per idle period. The timer does not re-arm until the next main-loop turn ends. An abandoned session costs one handoff.
-- Nothing happens below `minContextTokens`. The size is `(await $.session.usage()).context.tokens` read in the main-loop `turn.complete`; absent (right after a compaction) counts as below threshold. `e.usage` on `turn.complete` sums every response of the turn and is the wrong figure.
+- Nothing happens below `minContextTokens`. The size is `(await $.session.usage()).context.tokens` read in the main-loop `turn.complete`; absent (right after a compaction) counts as below threshold. `e.usage` on `turn.complete` sums every response of the turn and is the wrong figure. A `turn.complete` with no `e.usage` (an API error, or an interrupt before any request counted) read nothing from the cache: the last touch stands and nothing is armed.
 - The fork names no `effort`. On a model without per-message effort, a named effort rewrites the whole conversation into a new cache entry. The handoff prompt says there are no tools and asks for a direct answer without deliberation.
 - What the fork writes to the cache was small in every run measured, at 1.25 times the input price, in an entry the main thread does not reuse: about 7.6k tokens after a conversation's first turn, 3 after a short second turn, and 0 after a turn of eight sequential file reads that took the context from 33.5k to 79k tokens (that fork read 79,076 from cache, 127 uncached input, 1,512 output). An earlier reading, that a fork rewrites all of the last turn's tool output, did not hold in that run.
 - The fork is skipped when the effort level changed while idle, when a turn is running, when the session is not interactive, and when the wall clock says the cache has already lapsed (a laptop that slept through the deadline). A skipped fork writes nothing.
 - `/embers` on a cold cache says so and asks before forking.
-- Every fork and swap toasts what it cost, so the cost is visible: a fork in words, `read 26k from cache, wrote 7.6k, 937 out`, with `(cold)` when the read was cold; a swap as the tokens before and after.
+- Every fork and swap logs one line with what it cost, so the cost is visible: a fork in words, `read 26k from cache, wrote 7.6k, 937 out`, with `(cold)` when the read was cold; a swap as the tokens before and after.
 
 ## Scope filters
 
@@ -65,7 +65,7 @@ Two things make it worse:
 
 `hooks/state.ts` owns this value. Each change is a named pure function applied through `apply($, transition, input)`: `turnEnded`, `promptStarted`, `forkStarted`, `forkSkipped`, `forkFailed`, `forkWritten`, `cacheTouched`, `prefixReplaced` (a compaction, a model switch, `/effort`, or a swap or fresh start), `cleared`, and the small ones for the offer, the lapse and the off switch. A value stored under an older shape reads as the initial state.
 
-`hooks/process.ts` holds what must outlive a `/clear` and may start over on a reload: the timer handle, whether a swap is running, and `isOff`. `/embers off` holds for the process through that variable and `$.state`: `isOff(run)` reads either. `/embers off` and `/embers on` write both, `session.start` copies the state to the variable after a reload, and every state write copies an off variable into the state, so off survives a reload that follows a `/clear`. A `/clear` starts `$.state` over and no `session.start` follows it. Whether the session is interactive is not kept: `turn.complete` reads `$.session.surfaces()`, empty under `-p`.
+`hooks/process.ts` holds what must outlive a `/clear` and may start over on a reload: the timer handle, whether a swap is running, `isOff`, the Markdown of each placed handoff row, and the handoff last swapped or loaded, for `/embers show`. A reload empties the placed rows, which then draw nothing. `/embers off` holds for the process through that variable and `$.state`: `isOff(run)` reads either. `/embers off` and `/embers on` write both, `session.start` copies the state to the variable after a reload, and every state write copies an off variable into the state, so off survives a reload that follows a `/clear`. A `/clear` starts `$.state` over and no `session.start` follows it. Whether the session is interactive is not kept: `turn.complete` reads `$.session.surfaces()`, empty under `-p`.
 
 The effort level is not kept: no API reads it while idle. `/effort` disarms the timer and forgets the cache, as a compaction does; a fork still running then is reported as moved on.
 
@@ -105,8 +105,9 @@ A `userConfig` change reloads the mod; the state above survives it.
   - ready: `embers  handoff ready  12:55, 118k tokens, warm until 13:55`
   - ttl stored: `embers  cache lapsed after 5m  margin now 1m`
 - **Ask** (`$.ui.ask`) on a cold prompt, with the options above and one line of cost: the context size, what sending cold costs, what the swap costs.
-- **Toast** once per handoff, swap or skipped fork, with the token figures.
-- **Commands**: `/embers` writes a handoff now (asks first if the cache is cold); `/embers status` says whether embers is on, the cache (warm until a time, cold since a time, or unknown), the phase in words, the last fork's figures and time, this root's handoffs and the TTL in force; `/embers off` disables it for this process and `/embers on` undoes that.
+- **Log line** once per handoff, swap, load or skipped fork, with the token figures; a timer fires when nobody is looking, and a toast is gone in four seconds.
+- **Placed row** after a swap, a load or `/embers show`: the handoff as Markdown, for the person only.
+- **Commands**: `/embers` writes a handoff now (asks first if the cache is cold); `/embers show` places this session's handoff, or the one swapped or loaded in this process; `/embers status` says whether embers is on, the cache (warm until a time, cold since a time, or unknown), the phase in words, the last fork's figures and time, this root's handoffs and the TTL in force; `/embers off` disables it for this process and `/embers on` undoes that.
 - **Status line**: nothing.
 
 ## Not in scope

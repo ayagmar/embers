@@ -25,6 +25,7 @@ import {
   forkFigures,
   handoffPrompt,
   handoffTokens,
+  handoffView,
   isWarmRead,
   KNOWN_TTLS,
   k,
@@ -61,7 +62,7 @@ type Written =
   | { kind: 'written'; record: HandoffRecord; usage: ModelUsage }
   | { kind: 'none'; reason: NoHandoff; usage?: ModelUsage }
 
-/** What a fork came to, for a toast or a command's reply. */
+/** What a fork came to, for a log line or a command's reply. */
 export function outcome(written: Written): string {
   switch (written.kind) {
     case 'written':
@@ -143,15 +144,26 @@ async function fire($: EngineInterface, config: Config): Promise<void> {
   if (cache.model !== model) {
     // The prefix is billed afresh after `/model`: a fork now pays for all of it.
     await apply($, forkSkipped)
-    $.ui.toast('embers: handoff skipped, the model changed since the last turn')
+    $.ui.log('embers: handoff skipped, the model changed since the last turn')
     return
   }
   if (now - cache.touchedAt >= ttl - SLACK_MS) {
     await apply($, forkSkipped)
-    $.ui.toast(`embers: handoff skipped, the cache had already lapsed after ${minutesOf(now - cache.touchedAt)}m idle`)
+    $.ui.log(`embers: handoff skipped, the cache had already lapsed after ${minutesOf(now - cache.touchedAt)}m idle`)
     return
   }
-  $.ui.toast(`embers: ${outcome(await writeHandoff($, config))}`)
+  // A log line, not a toast: the timer fires when nobody is looking.
+  $.ui.log(`embers: ${outcome(await writeHandoff($, config))}`)
+}
+
+/**
+ * Places the handoff in the transcript as a Markdown row for the person; the
+ * model reads its own copy from the appended row. A log line is one line.
+ */
+export async function showHandoff($: EngineInterface, record: HandoffRecord): Promise<boolean> {
+  const id = `handoff-${record.writtenAt}`
+  inProcess.placed.set(id, handoffView(record))
+  return (await $.ui.place({ id })).isPlaced
 }
 
 /** After a `/clear`: a new conversation with nothing cached and no timer. */
@@ -167,22 +179,19 @@ export async function afterClear($: EngineInterface): Promise<void> {
  * plugin's own `session.compact` hook, so core would summarize the cold
  * prefix; a clear and an append make no model call.
  */
-async function swap($: EngineInterface, record: HandoffRecord, tokens: number, fixed: number): Promise<void> {
-  const oldId = await $.session.id()
-  await $.command.run({ command: 'clear' })
-  await afterClear($)
+async function swap($: EngineInterface, record: HandoffRecord, plan: Reshape, resume: string): Promise<void> {
   const appended = await $.session.append({
     message: { type: 'user', content: [{ type: 'text', text: compose(record) }] },
   })
   if (appended.deny !== undefined) {
-    $.ui.toast(`embers: the session was cleared but the handoff was refused (${appended.deny})`)
+    $.ui.log(`embers: the session was cleared but the handoff was refused (${appended.deny}). ${resume}`)
     return
   }
   await $.store.delete(handoffKey(record.root, record.sessionId))
-  // What the model now holds, for the person to read; the model never reads a log line.
-  $.ui.log(compose(record))
-  $.ui.toast(
-    `embers: swapped ${k(tokens)} → ~${k(fixed + handoffTokens(record))} tokens (handoff ${k(handoffTokens(record))}); send your prompt from the box. Old conversation: claude --resume ${oldId}`,
+  inProcess.lastShown = record
+  await showHandoff($, record)
+  $.ui.log(
+    `embers: swapped to the ${clockTime(record.writtenAt)} handoff, ${k(plan.tokens)} → ~${k(plan.fixed + handoffTokens(record))} tokens; send your prompt from the box. ${resume}`,
   )
 }
 
@@ -259,20 +268,34 @@ export async function coldPrompt(
 /** A swap to `swapTo`, or a fresh session when it is absent. */
 type Reshape = { swapTo: HandoffRecord | undefined; tokens: number; fixed: number }
 
-/** Runs the choice made at a cold prompt; the engine has put the dropped prompt back in the box. */
+/**
+ * Runs the choice made at a cold prompt; the engine has put the dropped prompt
+ * back in the box. Every outcome is a log line, the old session's id in each
+ * one past the `/clear`.
+ */
 async function reshape($: EngineInterface, plan: Reshape): Promise<void> {
+  const resume = `Old conversation: claude --resume ${await $.session.id()}`
+  let isCleared = false
   try {
+    await $.command.run({ command: 'clear' })
+    isCleared = true
+    await afterClear($)
     if (plan.swapTo === undefined) {
-      await $.command.run({ command: 'clear' })
-      await afterClear($)
-      $.ui.toast('embers: started a fresh session; send your prompt from the box')
+      $.ui.log(`embers: started a fresh session; send your prompt from the box. ${resume}`)
       return
     }
-    await swap($, plan.swapTo, plan.tokens, plan.fixed)
+    await swap($, plan.swapTo, plan, resume)
+  } catch (error) {
+    $.ui.log(
+      isCleared
+        ? `embers: the session was cleared but the handoff was not added (${String(error)}). ${resume}`
+        : `embers: the session could not be cleared (${String(error)}); nothing changed`,
+    )
   } finally {
-    // The person has chosen: the prompt they send next is not asked about again.
     inProcess.isReshaping = false
-    await apply($, prefixReplaced, 'cold-choice')
+    // The person has chosen: the prompt they send next is not asked about again,
+    // unless nothing changed and the cache is as cold as it was.
+    if (isCleared) await apply($, prefixReplaced, 'cold-choice')
   }
 }
 
@@ -349,7 +372,9 @@ export async function offerHandoff($: EngineInterface, config: Config): Promise<
   }
   await $.session.append({ message: { type: 'user', content: [{ type: 'text', text: compose(offer) }] } })
   await $.store.delete(handoffKey(offer.root, offer.sessionId))
-  $.ui.toast(`embers: loaded the ${clockTime(offer.writtenAt)} handoff (~${k(handoffTokens(offer))} tokens)`)
+  inProcess.lastShown = offer
+  await showHandoff($, offer)
+  $.ui.log(`embers: loaded the ${clockTime(offer.writtenAt)} handoff (~${k(handoffTokens(offer))} tokens)`)
 }
 
 export async function status($: EngineInterface, config: Config): Promise<string> {

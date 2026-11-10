@@ -8,12 +8,13 @@ import {
   offerHandoff,
   outcome,
   seedFromHandoff,
+  showHandoff,
   status,
   ttlMs,
   writeHandoff,
 } from './handoff'
 import { disarm, inProcess } from './process'
-import { handoffKey, marginFor, sweep, ttlKey } from './records'
+import { handoffKey, marginFor, readHandoff, sweep, ttlKey } from './records'
 import { bandLine, CANCEL, isPersonPrompt, k, MINUTE, readConfig, WRITE } from './shared'
 import {
   apply,
@@ -33,8 +34,9 @@ export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'embers',
-      description: 'Write a handoff now; `status` shows where embers stands; `off` and `on` switch it for this process',
-      argumentHint: '[status|off|on]',
+      description:
+        'Write a handoff now; `show` shows the handoff, `status` where embers stands; `off` and `on` switch it for this process',
+      argumentHint: '[show|status|off|on]',
     })
     const [now, ttl] = await Promise.all([$.clock.now(), ttlMs($, config)])
     // Fires on reload too: the state survived, the timer and any swap in flight did not.
@@ -107,6 +109,9 @@ export const register: Register = (on, options) => {
     const isInteractive = surfaces.length > 0
     // A handoff of this session is overtaken by the turn that just ended.
     await $.store.delete(handoffKey(root, sessionId))
+    // No usage: an API error or an interrupt before any request counted. The
+    // cache was not read, so the last touch stands and nothing is armed.
+    if (e.usage === undefined) return next(e)
     const tokens = usage.context.tokens
     const margin = marginFor(ttl / MINUTE, config.marginMinutes) * MINUTE
     const isArmed = !isOff(before) && isInteractive && tokens !== undefined && tokens >= config.minContextTokens
@@ -134,6 +139,14 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'embers' }, async ($, e) => {
     const arg = e.args.trim()
     if (arg === 'status') return { text: await status($, config) }
+    if (arg === 'show') {
+      const [root, sessionId] = await Promise.all([$.session.root(), $.session.id()])
+      const record = (await readHandoff($, handoffKey(root, sessionId))) ?? inProcess.lastShown
+      if (record === undefined) return { text: 'No handoff for this session.' }
+      // Placed, not returned: a plugin's command text goes in requests, and the model has its own copy.
+      if (await showHandoff($, record)) return {}
+      return { text: 'embers: no surface to draw the handoff on.' }
+    }
     if (arg === 'off') {
       inProcess.isOff = true
       disarm()
@@ -145,7 +158,7 @@ export const register: Register = (on, options) => {
       await apply($, switchedOn)
       return { text: 'embers is on; the next turn to end arms it.' }
     }
-    if (arg !== '') return { text: 'Usage: /embers [status|off|on]' }
+    if (arg !== '') return { text: 'Usage: /embers [show|status|off|on]' }
     const [s, now, ttl, usage, model] = await Promise.all([
       readRun($),
       $.clock.now(),
@@ -198,6 +211,17 @@ export const register: Register = (on, options) => {
     await apply($, prefixReplaced, 'model')
     return next(e)
   }).catch((_, e, next) => next(e))
+
+  on('ui.render', { component: 'Placed' }, ($, e, next) => {
+    const text = e.props.plugin === 'embers' ? inProcess.placed.get(e.props.id) : undefined
+    if (text === undefined) return next(e)
+    const { Box, Markdown } = $.ui.resolve(e)
+    return (
+      <Box flexDirection="column" borderStyle="round" borderDimColor paddingX={1}>
+        <Markdown text={text} />
+      </Box>
+    )
+  })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (!config.showBand || e.props.hasSurvey) return next(e)
