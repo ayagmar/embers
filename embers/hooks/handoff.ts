@@ -3,11 +3,13 @@ import type { EngineInterface, ModelForkResult, ModelUsage, PromptSubmitResult }
 import type { HandoffRecord } from '../types'
 import { disarm, inProcess } from './process'
 import {
+  addStats,
   currentBranch,
   handoffKey,
   listHandoffs,
   marginFor,
   readHandoff,
+  readStats,
   readTtl,
   sweep,
   ttlKey,
@@ -15,13 +17,14 @@ import {
 } from './records'
 import type { ColdChoice, Config } from './shared'
 import {
-  COLD_LABELS,
   cacheWords,
   clockTime,
   coldChoiceOf,
+  coldOptions,
   compose,
   dateTime,
   fixedTokens,
+  forkCost,
   forkFigures,
   handoffPrompt,
   handoffTokens,
@@ -36,6 +39,8 @@ import {
   phaseWords,
   SKIP,
   SLACK_MS,
+  statsWords,
+  swapSaving,
 } from './shared'
 import {
   apply,
@@ -113,6 +118,7 @@ export async function writeHandoff($: EngineInterface, config: Config): Promise<
       ? { kind: 'none', reason: reply.reason }
       : { kind: 'none', reason: reply.reason, usage: reply.usage }
   }
+  await addStats($, now, { forks: 1, forkCost: forkCost(reply.usage) })
   const [sessionAfter, turnsAfter, s] = await Promise.all([$.session.id(), $.session.turns(), readCurrent($)])
   if (sessionAfter !== sessionId || turnsAfter !== turns || s.phase.kind !== 'writing') {
     // A turn or a /clear that moved on set its own phase; only a stale `writing` is ours.
@@ -181,7 +187,7 @@ export async function afterClear($: EngineInterface): Promise<void> {
  */
 async function swap($: EngineInterface, record: HandoffRecord, plan: Reshape, resume: string): Promise<void> {
   const appended = await $.session.append({
-    message: { type: 'user', content: [{ type: 'text', text: compose(record) }] },
+    message: { type: 'user', content: [{ type: 'text', text: compose(record, 'swap') }] },
   })
   if (appended.deny !== undefined) {
     $.ui.log(`embers: the session was cleared but the handoff was refused (${appended.deny}). ${resume}`)
@@ -190,8 +196,10 @@ async function swap($: EngineInterface, record: HandoffRecord, plan: Reshape, re
   await $.store.delete(handoffKey(record.root, record.sessionId))
   inProcess.lastShown = record
   await showHandoff($, record)
+  const after = plan.fixed + handoffTokens(record)
+  await addStats($, await $.clock.now(), { swaps: 1, swapSaved: swapSaving(plan.tokens, after) })
   $.ui.log(
-    `embers: swapped to the ${clockTime(record.writtenAt)} handoff, ${k(plan.tokens)} → ~${k(plan.fixed + handoffTokens(record))} tokens; send your prompt from the box. ${resume}`,
+    `embers: swapped to the ${clockTime(record.writtenAt)} handoff, ${k(plan.tokens)} → ~${k(after)} tokens; send your prompt from the box. ${resume}`,
   )
 }
 
@@ -238,21 +246,35 @@ export async function coldPrompt(
 
   // Writing a handoff now would reread the cold prefix and then throw that
   // write away: with no handoff on file, the choice is to send or start fresh.
-  let choice: ColdChoice
+  let choice: ColdChoice | undefined
   if (config.coldMode === 'swap' && matching !== undefined) {
     choice = 'swap'
   } else {
-    const swapCost =
+    const options = coldOptions({
+      send: tokens,
+      fresh: fixed,
+      swap: matching === undefined ? undefined : fixed + handoffTokens(matching),
+    })
+    const clears =
       matching === undefined
-        ? ''
-        : `; swapping to the ${clockTime(matching.writtenAt)} handoff writes ~${k(fixed + handoffTokens(matching))}`
-    const question = `The prompt cache is cold (${minutesOf(idleMs)}m idle). Sending rewrites ${k(tokens)} tokens${swapCost}; a fresh session writes ~${k(fixed)} (paste attachments again). What now?`
-    const choices: ColdChoice[] = matching === undefined ? ['send', 'fresh'] : ['swap', 'send', 'fresh']
-    const options = choices.map(option => COLD_LABELS[option])
-    choice = coldChoiceOf(await $.ui.ask(question, { header: 'embers', options }).catch(() => COLD_LABELS.send))
+        ? 'a fresh session clears it'
+        : `swapping to the ${clockTime(matching.writtenAt)} handoff or a fresh session clears it`
+    const question = `The prompt cache is cold (${minutesOf(idleMs)}m idle). Sending rewrites ${k(tokens)} tokens; ${clears} (paste attachments again). What now?`
+    const answer = await $.ui
+      .ask(question, { header: 'embers', options: options.map(([, label]) => label) })
+      .catch(() => undefined)
+    // No one to ask (-p): send, as the prompt would have gone without embers.
+    if (answer === undefined && (await $.session.surfaces()).length === 0) return undefined
+    choice = answer === undefined ? undefined : coldChoiceOf(answer, options)
   }
 
+  // Dismissed, or free text under "Other": nothing is decided, so nothing is spent.
+  if (choice === undefined) return { drop: 'embers: nothing sent; your prompt is back in the box' }
   if (choice === 'send') return undefined
+  if (choice === 'read' && matching !== undefined) {
+    await showHandoff($, matching)
+    return { drop: 'embers: the handoff is above; your prompt is back in the box, send it to choose' }
+  }
   // The host refuses a compaction or a command under the turn a prompt.submit
   // hook holds, so the prompt is dropped (the engine puts it back in the box)
   // and the session is reshaped from a timer for the person to send it again.
@@ -316,7 +338,7 @@ export async function observeTtl(
   if (total === 0) return
   const [model, now, s] = await Promise.all([$.session.model(), $.clock.now(), readRun($)])
   const key = ttlKey(model)
-  const override = await readTtl($, key)
+  const override = await readTtl($, key, now)
   const ttl = override?.observedMinutes ?? config.ttlMinutes
   const idleMinutes = idleMs / MINUTE
   const held = s.lapse?.isPending === true && s.lapse.model === model ? s.lapse : undefined
@@ -366,12 +388,14 @@ export async function offerHandoff($: EngineInterface, config: Config): Promise<
       { header: 'embers', options: [LOAD, SKIP] },
     )
     .catch(() => SKIP)
-  if (answer !== LOAD) {
-    await $.store.set(handoffKey(offer.root, offer.sessionId), { ...offer, offeredAt: now })
-    return
-  }
-  await $.session.append({ message: { type: 'user', content: [{ type: 'text', text: compose(offer) }] } })
-  await $.store.delete(handoffKey(offer.root, offer.sessionId))
+  // Kept, marked shown: its own session may still be open and swap to it. Read
+  // again, as that session may have written a newer one while the ask was open.
+  const key = handoffKey(offer.root, offer.sessionId)
+  const onFile = await readHandoff($, key)
+  if (onFile?.writtenAt === offer.writtenAt) await $.store.set(key, { ...onFile, offeredAt: now })
+  if (answer !== LOAD) return
+  await $.session.append({ message: { type: 'user', content: [{ type: 'text', text: compose(offer, 'load') }] } })
+  await addStats($, now, { loads: 1 })
   inProcess.lastShown = offer
   await showHandoff($, offer)
   $.ui.log(`embers: loaded the ${clockTime(offer.writtenAt)} handoff (~${k(handoffTokens(offer))} tokens)`)
@@ -385,7 +409,7 @@ export async function status($: EngineInterface, config: Config): Promise<string
     readRun($),
     $.clock.now(),
   ])
-  const override = await readTtl($, ttlKey(model))
+  const override = await readTtl($, ttlKey(model), now)
   const ttl = override
     ? `${override.observedMinutes}m for ${model}, observed ${dateTime(override.observedAt)}`
     : `${config.ttlMinutes}m for ${model} (configured)`
@@ -402,5 +426,6 @@ export async function status($: EngineInterface, config: Config): Promise<string
     `Last fork: ${fork}.`,
     `TTL: ${ttl}.`,
     handoffs,
+    statsWords(await readStats($, now)),
   ].join('\n')
 }

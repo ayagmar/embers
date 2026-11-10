@@ -65,7 +65,7 @@ export type HandoffRecord = {
   contextTokens: number
   text: string
   lastAssistant: string
-  /** When the start offer showed it and the person skipped it; it is not offered again. */
+  /** When the start offer showed it, skipped or loaded; it is not offered again, and its own session can still swap to it. */
   offeredAt?: number
 }
 
@@ -74,6 +74,20 @@ export type TtlRecord = {
   v: 1
   observedMinutes: number
   observedAt: number
+  /** `reported` came from Claude Code at a model switch and does not expire; an observed one (or one with no source) holds for a day. */
+  source?: 'reported'
+}
+
+/** `$.store` key `stats:<yyyy-mm>`, local time: what embers cost and saved that month, in input-token equivalents. */
+export type StatsRecord = {
+  v: 1
+  forks: number
+  /** Every fork that reached the API, priced by `forkCost`. */
+  forkCost: number
+  swaps: number
+  /** Cache writes the swaps avoided, priced by `swapSaving`. */
+  swapSaved: number
+  loads: number
 }
 
 declare module 'claude-code' {

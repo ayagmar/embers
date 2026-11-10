@@ -206,7 +206,12 @@ export const register: Register = (on, options) => {
   on('classic.PostModelSwitch', async ($, e, next) => {
     disarm()
     const [model, now] = await Promise.all([$.session.model(), $.clock.now()])
-    await $.store.set(ttlKey(model), { v: 1, observedMinutes: e.cache_ttl === '5m' ? 5 : 60, observedAt: now })
+    await $.store.set(ttlKey(model), {
+      v: 1,
+      observedMinutes: e.cache_ttl === '5m' ? 5 : 60,
+      observedAt: now,
+      source: 'reported',
+    })
     // The new model has no cache entry: nothing to judge or keep warm.
     await apply($, prefixReplaced, 'model')
     return next(e)

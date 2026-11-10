@@ -141,8 +141,11 @@ function engine(on: On, overrides: Partial<World> = {}): World {
   on('tool.call', { tool: 'AskUserQuestion' }, (_, e) => {
     const asked = e.questions[0]
     if (asked === undefined) throw new Error('no question')
-    world.asks.push({ question: asked.question, labels: asked.options.map(option => option.label) })
-    return { result: { questions: e.questions, answers: { [asked.question]: world.answer } } }
+    const labels = asked.options.map(option => option.label)
+    world.asks.push({ question: asked.question, labels })
+    // `answer` names an option by the start of its label, which may carry a size; else it is typed under "Other".
+    const answer = labels.find(label => label.startsWith(world.answer)) ?? world.answer
+    return { result: { questions: e.questions, answers: { [asked.question]: answer } } }
   })
   on('session.compact', (_, e) => {
     world.compactions.push(e)
@@ -352,7 +355,10 @@ test('a cold prompt with a matching handoff swaps to it without a model call', a
   await clock.settle()
 
   expect(dropped.drop).toContain('swapping to the handoff')
-  expect(world.asks[0]?.labels).toEqual(['Swap to handoff', 'Send as is', 'Fresh session'])
+  // Sending rewrites 100k; Fresh writes the 20k of system and tools; the swap adds the handoff.
+  const [swapLabel, ...rest] = world.asks[0]?.labels ?? []
+  expect(swapLabel).toMatch(/^Swap to handoff \(~2\dk\)$/)
+  expect(rest).toEqual(['Send as is (100k)', 'Fresh session (~20k)', 'Read it first'])
   expect(world.commands).toEqual(['clear'])
   const rows = session.appended().map(row => JSON.stringify(row.message.content))
   expect(rows).toHaveLength(1)
@@ -538,7 +544,7 @@ test('a handoff whose turn count no longer matches is not swapped to', async ($,
   const entered = await $.prompt.submit({ text: 'go on', ...typed })
 
   expect(entered).toEqual({ text: 'go on' })
-  expect(world.asks.map(ask => ask.labels)).toEqual([['Send as is', 'Fresh session']])
+  expect(world.asks.map(ask => ask.labels)).toEqual([['Send as is (100k)', 'Fresh session (~20k)']])
   expect(world.compactions).toEqual([])
   expect(world.forks).toBe(0)
 })
@@ -970,4 +976,94 @@ test("/embers show draws this session's handoff for the person and sends the mod
 
   expect(shown.text).toBeUndefined()
   expect(await placedText($, world)).toContain('## Goal\n\nship v2')
+})
+
+test('a cold ask answered with free text or dismissed sends nothing and changes nothing', async ($, on) => {
+  const world = engine(on, { answer: 'hmm, wait', contextTokens: undefined })
+  const clock = mock.clock(on, { now: T0 + 120 * MINUTE })
+  memoryStore(on, { [KEY]: handoff({}) })
+
+  await $.session.start(start)
+  const dropped = await $.prompt.submit({ text: 'go on', ...typed })
+  await clock.settle()
+
+  expect(dropped).toEqual({ drop: 'embers: nothing sent; your prompt is back in the box' })
+  expect(world.commands).toEqual([])
+  // Still cold: the prompt sent again is asked about again.
+  await $.prompt.submit({ text: 'go on', ...typed })
+  expect(world.asks).toHaveLength(2)
+})
+
+test('Read it first shows the handoff, keeps the session, and asks again on the next prompt', async ($, on) => {
+  const world = engine(on, { answer: 'Read it first', contextTokens: undefined })
+  const clock = mock.clock(on, { now: T0 + 120 * MINUTE })
+  const store = memoryStore(on, { [KEY]: handoff({ text: '## Goal\n\nship v2' }) })
+
+  await $.session.start(start)
+  const dropped = await $.prompt.submit({ text: 'go on', ...typed })
+  await clock.settle()
+
+  expect(dropped.drop).toContain('the handoff is above')
+  expect(await placedText($, world)).toContain('## Goal\n\nship v2')
+  expect(world.commands).toEqual([])
+  expect(store.has(KEY)).toBe(true)
+  world.answer = 'Swap to handoff'
+  await $.prompt.submit({ text: 'go on', ...typed })
+  await clock.settle()
+  expect(world.commands).toEqual(['clear'])
+})
+
+test('an observed TTL expires after a day; one Claude Code reported does not', async ($, on) => {
+  engine(on)
+  mock.clock(on, { now: T0 })
+  const store = memoryStore(on, {
+    'ttl:claude-test': { v: 1, observedMinutes: 5, observedAt: T0 - 2 * 24 * 60 * MINUTE },
+  })
+
+  await $.session.start(start)
+  await $.turn.complete(turnEnd)
+  expect(await band($)).toBe(`embers  warm  handoff at ${hhmm(T0 + 55 * MINUTE)}`)
+  expect(store.has('ttl:claude-test')).toBe(false)
+
+  store.set('ttl:claude-test', { v: 1, observedMinutes: 5, observedAt: T0 - 2 * 24 * 60 * MINUTE, source: 'reported' })
+  await $.turn.complete(turnEnd)
+  expect(await band($)).toBe(`embers  warm  handoff at ${hhmm(T0 + 4 * MINUTE)}`)
+})
+
+test("Load it brings in an earlier session's handoff as such, and leaves it for that session", async ($, on) => {
+  const world = engine(on, { answer: 'Load it', turns: 0 })
+  const clock = mock.clock(on, { now: T0 })
+  const oldKey = `handoff:${ROOT}:old`
+  const store = memoryStore(on, {
+    [oldKey]: handoff({ sessionId: 'old', writtenAt: T0 - 120 * MINUTE, text: 'ship v2' }),
+  })
+  const session = mock.session(on)
+
+  await $.session.start(start)
+  await clock.settle()
+
+  const row = JSON.stringify(session.appended()[0]?.message.content)
+  expect(row).toContain('A handoff from an earlier session')
+  expect(row).not.toContain('This conversation was replaced')
+  expect(await placedText($, world)).toContain('ship v2')
+  // Session "old" may still be open: its handoff stays, marked so it is not offered again.
+  expect(store.get(oldKey)).toMatchObject({ sessionId: 'old', offeredAt: T0 })
+})
+
+test('/embers status tallies what handoffs cost and what swaps saved this month', async ($, on) => {
+  engine(on, { answer: 'Swap to handoff' })
+  const clock = mock.clock(on, { now: T0 })
+  memoryStore(on)
+
+  await $.session.start(start)
+  await $.turn.complete(turnEnd)
+  await clock.advance(55 * MINUTE)
+  await clock.set(T0 + 120 * MINUTE)
+  await $.prompt.submit({ text: 'go on', ...typed })
+  await clock.settle()
+
+  const status = await $.command.run(slash('embers', 'status'))
+  // The fork read 99k from cache, 300 uncached, 1.2k out: 9.9k + 300 + 6k = 16.2k.
+  expect(status.text).toContain('This month: 1 handoff cost ~16k; 1 swap saved ~')
+  expect(status.text).toMatch(/Net saved ~\d+k/)
 })

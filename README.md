@@ -35,8 +35,11 @@ If you send a prompt after the cache has gone cold, embers asks what to do and s
 - **Swap to handoff**: clear the session and continue from the handoff. Offered only when a handoff matches this conversation. Send your prompt again from the box.
 - **Send as is**: send the prompt and rewrite the cache.
 - **Fresh session**: clear the session with no handoff. Send your prompt again from the box.
+- **Read it first**: show the handoff and change nothing. Send your prompt again to choose.
 
-When a new session starts in a folder where an earlier one left a handoff on the same branch, embers offers to load it. Choose **Load it** or **Skip**.
+Each label carries the tokens the next request writes, such as `Send as is (100k)`. Pressing Esc, or typing your own answer, sends nothing and leaves your prompt in the box.
+
+When a new session starts in a folder where an earlier one left a handoff on the same branch, embers offers to load it. Choose **Load it** or **Skip**. The model is told it comes from an earlier session and that files may have changed. The earlier session keeps its handoff, in case it is still open.
 
 After a swap or a load, the handoff is drawn in the transcript as a block you can read, with a line naming the old conversation: `claude --resume <id>` returns to it. If a swap fails partway, a line says what happened.
 
@@ -48,7 +51,7 @@ Each handoff adds a line with its cost, such as `embers: Handoff written; read 2
 |---|---|
 | `/embers` | Writes a handoff now, and asks first if the cache is cold. |
 | `/embers show` | Draws this session's handoff, or the one it swapped to, for you to read. The model is not sent it. |
-| `/embers status` | Shows on or off, the cache, the phase, the last fork, the TTL and this folder's handoffs. |
+| `/embers status` | Shows on or off, the cache, the phase, the last fork, the TTL, this folder's handoffs, and this month's tally: what handoffs cost and what swaps saved. |
 | `/embers off` | Turns embers off until you run `/embers on` or quit. |
 | `/embers on` | Turns it back on; the next turn to end arms it. |
 

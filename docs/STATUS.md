@@ -8,15 +8,13 @@ embers 0.1.0 is on `main`, tagged `embers--v0.1.0`, and listed in the `ayagmar/c
 
 ## In flight
 
-PR #3, `fix/swap-feedback`: the handoff is drawn as a placed Markdown row instead of a mangled log line, `/embers show`, swap failures reported, log lines instead of toasts, and errored turns no longer count as cache reads. The placed row has not been checked in a live terminal.
+PR #3, `fix/swap-feedback`: the handoff drawn as a placed Markdown row, `/embers show`, swap failures reported, log lines instead of toasts, errored turns not counted as cache reads; Esc on the cold ask sends nothing; "Read it first" and sizes in the ask labels; observed TTLs expire after a day; a loaded handoff gets its own header and stays for its session; Markdown handoffs under fixed headings; a monthly tally in `/embers status`.
 
 ## Next
 
-1. Check the placed row after a real swap, then merge PR #3.
-2. Cold-ask Esc currently sends the prompt; drop it instead. Expire a stored `ttl:<model>` after 24 hours. Keep a loaded handoff's record (mark it used) so a second session's "Load it" does not take it from a live session. Give a loaded handoff its own header instead of "this conversation was replaced".
-3. Handoff prompt asks for Markdown with fixed headings; a savings ledger in `/embers status`; a "Read it first" cold choice with sizes in the labels.
-4. Run it with default settings for a few days and watch the fork lines.
-5. Add `author` and an icon to the manifest before any wider publishing.
+1. Run it with default settings for a few days and watch the fork lines and the monthly tally.
+2. Add `author` and an icon to the manifest before any wider publishing.
+3. From the audit, not yet done: git HEAD in the handoff and a staleness note on load; handoff history with `/embers show <n>`; a cold band once the cache lapses; an opt-out of automatic forks for worker sessions.
 
 ## Decisions
 

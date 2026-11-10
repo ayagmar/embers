@@ -1,6 +1,6 @@
 import type { ModelUsage, PluginOptions, PromptSubmitInput, SessionContextBreakdown, SessionMessage } from 'claude-code'
 
-import type { Cache, EmbersRun, HandoffRecord, Phase } from '../types'
+import type { Cache, EmbersRun, HandoffRecord, Phase, StatsRecord } from '../types'
 import { isOff } from './state'
 
 export const MINUTE = 60_000
@@ -14,22 +14,31 @@ const HANDOFF_PROMPT = [
   'Write a handoff for this conversation so that it can continue from the handoff alone, without the transcript:',
   'the goal, the decisions made and why, the state of the work (files touched, what is done, what is not),',
   'open questions, and the exact next step. Be specific: names, paths, commands, figures.',
-  'Plain text, no preamble.',
+  'Write Markdown with no preamble, under exactly these headings in this order:',
+  '## Goal, ## Decisions, ## State, ## Open questions, ## Next step.',
 ].join(' ')
 
 /** The handoff request; the person's own instructions, when set, are its last sentence. */
 export const handoffPrompt = (instructions: string): string =>
   instructions.trim() === '' ? HANDOFF_PROMPT : `${HANDOFF_PROMPT} ${instructions.trim()}`
 
-export type ColdChoice = 'swap' | 'send' | 'fresh'
-export const COLD_LABELS: Record<ColdChoice, string> = {
-  swap: 'Swap to handoff',
-  send: 'Send as is',
-  fresh: 'Fresh session',
+export type ColdChoice = 'swap' | 'send' | 'fresh' | 'read'
+/** What the next request writes under each choice, for the labels; `read` writes nothing. */
+export type ColdSizes = { send: number; fresh: number; swap?: number }
+
+/** The cold ask's options, each label carrying its size: the dialog has no room for descriptions. */
+export function coldOptions(sizes: ColdSizes): [ColdChoice, string][] {
+  const common: [ColdChoice, string][] = [
+    ['send', `Send as is (${k(sizes.send)})`],
+    ['fresh', `Fresh session (~${k(sizes.fresh)})`],
+  ]
+  if (sizes.swap === undefined) return common
+  return [['swap', `Swap to handoff (~${k(sizes.swap)})`], ...common, ['read', 'Read it first']]
 }
-/** The choice behind an answer; free text typed under "Other" sends the prompt. */
-export const coldChoiceOf = (label: string): ColdChoice =>
-  label === COLD_LABELS.swap ? 'swap' : label === COLD_LABELS.fresh ? 'fresh' : 'send'
+
+/** The choice behind an answer; free text typed under "Other" is no choice. */
+export const coldChoiceOf = (answer: string, options: [ColdChoice, string][]): ColdChoice | undefined =>
+  options.find(([, label]) => label === answer)?.[0]
 
 export const LOAD = 'Load it'
 export const SKIP = 'Skip'
@@ -116,8 +125,16 @@ export function lastAssistantText(messages: readonly SessionMessage[]): string {
   return ''
 }
 
-export function compose(record: HandoffRecord): string {
-  const head = `[embers] This conversation was replaced by a handoff written at ${dateTime(record.writtenAt)}, before the prompt cache lapsed. Continue from it.`
+/**
+ * The handoff as the model's first row. A swap replaces this session's own
+ * conversation; a load brings in an earlier session's, maybe days old.
+ */
+export function compose(record: HandoffRecord, from: 'swap' | 'load'): string {
+  const where = record.branch === '' ? '' : ` on branch ${record.branch}`
+  const head =
+    from === 'swap'
+      ? `[embers] This conversation was replaced by a handoff written at ${dateTime(record.writtenAt)}, before the prompt cache lapsed. Continue from it.`
+      : `[embers] A handoff from an earlier session in this folder, written at ${dateTime(record.writtenAt)}${where}. Files may have changed since; check before relying on it.`
   const tail =
     record.lastAssistant === ''
       ? ''
@@ -134,6 +151,28 @@ export function handoffView(record: HandoffRecord): string {
   // biome-ignore lint/suspicious/noControlCharactersInRegex: the control characters Markdown refuses are the point
   const text = record.text.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, '')
   return `**embers handoff**, written ${dateTime(record.writtenAt)}${where}, ~${k(handoffTokens(record))} tokens\n\n${text}`
+}
+
+/**
+ * Prices in input-token equivalents, at Claude's ratios: a cache read 0.1, a
+ * cache write 1.25, output 5. The one place the savings tally is priced.
+ */
+export const forkCost = (usage: ModelUsage): number =>
+  Math.round(
+    0.1 * usage.cache_read_input_tokens +
+      1.25 * usage.cache_creation_input_tokens +
+      usage.input_tokens +
+      5 * usage.output_tokens,
+  )
+/** A swap writes `after` tokens to the cache where sending would have written `before`. */
+export const swapSaving = (before: number, after: number): number => Math.round(1.25 * Math.max(0, before - after))
+
+export function statsWords(stats: StatsRecord): string {
+  if (stats.forks === 0 && stats.swaps === 0 && stats.loads === 0) return 'This month: nothing yet.'
+  const net = stats.swapSaved - stats.forkCost
+  const count = (n: number, noun: string): string => `${n} ${noun}${n === 1 ? '' : 's'}`
+  const loads = stats.loads === 0 ? '' : `, ${stats.loads} loaded`
+  return `This month: ${count(stats.forks, 'handoff')} cost ~${k(stats.forkCost)}; ${count(stats.swaps, 'swap')} saved ~${k(stats.swapSaved)}${loads}. Net ${net >= 0 ? 'saved' : 'spent'} ~${k(Math.abs(net))} (input-token equivalents).`
 }
 
 /** A fork's cost in words: every toast and command shows it through here. */
