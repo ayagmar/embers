@@ -204,6 +204,7 @@ function memoryStore(
     return { value: undefined }
   })
   on('store.delete', (_, e) => {
+    if (refuses(e.key)) return { deny: 'refused by policy' }
     store.delete(e.key)
     return { value: undefined }
   })
@@ -1096,6 +1097,21 @@ test('a reload after a learned TTL expired drops its lapse and rearms on the TTL
   store.set('ttl:claude-other', { v: 1, observedMinutes: 5, observedAt: clock.now, source: 'reported' })
   await $.session.start(start)
   expect(await band($)).toBe(`embers  warm  handoff at ${hhmm(touch + 55 * MINUTE)}`)
+})
+
+test('an expired offer mark the store will not delete does not stop the handoff', async ($, on) => {
+  engine(on)
+  const clock = mock.clock(on, { now: T0 })
+  const store = memoryStore(on, { 'offered:gone:0': { v: 1, sessionId: 'gone', writtenAt: 0 } }, key =>
+    key.startsWith('offered:'),
+  )
+
+  await $.session.start(start)
+  await $.turn.complete(turnEnd)
+  await clock.advance(55 * MINUTE)
+
+  expect(store.has(KEY)).toBe(true)
+  expect(await band($)).toContain('handoff ready')
 })
 
 test('a handoff 0.1.0 already offered is not offered again, and a refused mark does not cost the Load', async ($, on) => {

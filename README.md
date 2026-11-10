@@ -41,7 +41,7 @@ sequenceDiagram
     CC->>API: request on a 25k prefix instead of 100k
 ```
 
-A fork rides the main conversation's cached prefix, so writing the handoff reads the conversation from cache instead of paying to write it. The fork is only made while the cache is still warm; a timer that wakes too late (a laptop that slept) skips it.
+A fork rides the main conversation's cached prefix, so writing the handoff reads the conversation from cache instead of paying to write it. The timer forks only while the cache should still be warm, and skips the fork if it wakes too late (a laptop that slept). `/embers` can write a handoff on a cold cache, after asking, since that rereads the whole conversation.
 
 What embers tracks for the current session:
 

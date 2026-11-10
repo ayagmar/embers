@@ -65,6 +65,16 @@ function parseStats(value: unknown): StatsRecord | undefined {
   return STATS_FIELDS.every(field => typeof value[field] === 'number') ? (value as StatsRecord) : undefined
 }
 
+/** Cleanup only, so best effort: a refused delete must not stop a reader, a sweep or a handoff. */
+async function drop($: EngineInterface, key: string): Promise<boolean> {
+  try {
+    await $.store.delete(key)
+    return true
+  } catch {
+    return false
+  }
+}
+
 /**
  * The one reader of `$.store`: a record whose key kind, `v` or shape does not
  * check out reads as absent and is deleted.
@@ -84,8 +94,7 @@ async function readRecord(
         : key.startsWith('offered:')
           ? parseOffered(key, value)
           : undefined
-  // Cleanup only: a refused delete must not make a bad record block its reader.
-  if (record === undefined) await $.store.delete(key).catch(() => undefined)
+  if (record === undefined) await drop($, key)
   return record
 }
 
@@ -169,7 +178,7 @@ export async function sweep($: EngineInterface, now: number, ttlMs: number): Pro
     const record = await readRecord($, key)
     if (record === undefined || !('writtenAt' in record)) continue
     if (now - record.writtenAt > RETAIN_MS) {
-      await $.store.delete(key)
+      await drop($, key)
       continue
     }
     if (!('root' in record)) continue
@@ -184,8 +193,7 @@ export async function sweep($: EngineInterface, now: number, ttlMs: number): Pro
   for (const record of superseded) {
     const count = perRoot.get(record.root) ?? 0
     if (count <= ROOT_CAP) continue
-    await $.store.delete(handoffKey(record.root, record.sessionId))
-    perRoot.set(record.root, count - 1)
+    if (await drop($, handoffKey(record.root, record.sessionId))) perRoot.set(record.root, count - 1)
   }
 }
 
