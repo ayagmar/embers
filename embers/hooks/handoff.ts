@@ -8,12 +8,14 @@ import {
   handoffKey,
   listHandoffs,
   marginFor,
+  markOffered,
   readHandoff,
   readStats,
   readTtl,
   sweep,
   ttlKey,
   ttlMinutes,
+  wasOffered,
 } from './records'
 import type { ColdChoice, Config } from './shared'
 import {
@@ -396,13 +398,13 @@ export async function offerHandoff($: EngineInterface, config: Config): Promise<
     $.clock.now(),
     ttlMs($, config),
   ])
-  const offer = (await listHandoffs($, root)).find(
-    record =>
-      record.branch === branch &&
-      record.sessionId !== sessionId &&
-      record.offeredAt === undefined &&
-      now - record.writtenAt >= ttl,
-  )
+  let offer: HandoffRecord | undefined
+  for (const record of await listHandoffs($, root)) {
+    if (record.branch !== branch || record.sessionId === sessionId || now - record.writtenAt < ttl) continue
+    if (await wasOffered($, record)) continue
+    offer = record
+    break
+  }
   if (offer === undefined) return
   const where = offer.branch === '' ? 'this folder' : `branch ${offer.branch}`
   const answer = await $.ui
@@ -411,11 +413,9 @@ export async function offerHandoff($: EngineInterface, config: Config): Promise<
       { header: 'embers', options: [LOAD, SKIP] },
     )
     .catch(() => SKIP)
-  // Kept, marked shown: its own session may still be open and swap to it. Read
-  // again, as that session may have written a newer one while the ask was open.
-  const key = handoffKey(offer.root, offer.sessionId)
-  const onFile = await readHandoff($, key)
-  if (onFile?.writtenAt === offer.writtenAt) await $.store.set(key, { ...onFile, offeredAt: now })
+  // Kept, and marked shown under a key of its own: its session may still be
+  // open, and swap to it or write a newer one.
+  await markOffered($, offer)
   if (answer !== LOAD) return
   const appended = await $.session
     .append({ message: { type: 'user', content: [{ type: 'text', text: compose(offer, 'load') }] } })

@@ -65,8 +65,17 @@ export type HandoffRecord = {
   contextTokens: number
   text: string
   lastAssistant: string
-  /** When the start offer showed it, skipped or loaded; it is not offered again, and its own session can still swap to it. */
-  offeredAt?: number
+}
+
+/**
+ * `$.store` key `offered:<sessionId>:<writtenAt>`: the start offer showed that
+ * handoff, skipped or loaded, so it is not offered again. A key of its own, so
+ * the mark never rewrites the handoff its own session may still replace.
+ */
+export type OfferedRecord = {
+  v: 1
+  sessionId: string
+  writtenAt: number
 }
 
 /** `$.store` key `ttl:<model>`. */

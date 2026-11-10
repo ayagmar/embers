@@ -3,6 +3,7 @@ import { atom, read, update } from 'claude-code'
 
 import type { Cache, EmbersRun, Lapse, LastFork, Phase } from '../types'
 import { inProcess } from './process'
+import { MINUTE } from './shared'
 
 export const INITIAL: EmbersRun = { phase: { kind: 'idle' }, isOff: false, startOffered: false }
 const run = atom({ plugin: 'embers', key: 'run' } as const, INITIAL, { shape: 'run-2' })
@@ -55,6 +56,27 @@ export function turnEnded(
   return {
     ...r,
     phase: input.deadline === undefined || r.isOff ? idle(cache) : { kind: 'armed', cache, deadline: input.deadline },
+  }
+}
+
+/**
+ * The TTL in force, in ms, with the margin it leaves, which can differ from
+ * the one the state was built on: an observed TTL expires after a day. A
+ * stored lapse that no longer matches goes, and the cache's end and an armed
+ * deadline move to the TTL in force.
+ */
+export function ttlInForce(r: EmbersRun, input: { ttl: number; margin: number }): EmbersRun {
+  const { lapse, phase } = r
+  const isStale = lapse !== undefined && lapse.isPending !== true && lapse.afterMinutes * MINUTE !== input.ttl
+  const known = isStale ? { ...r, lapse: undefined } : r
+  if (phase.cache === undefined) return known
+  const cache: Cache = { ...phase.cache, warmUntil: phase.cache.touchedAt + input.ttl }
+  return {
+    ...known,
+    phase:
+      phase.kind === 'armed'
+        ? { ...phase, cache, deadline: cache.touchedAt + input.ttl - input.margin }
+        : { ...phase, cache },
   }
 }
 
