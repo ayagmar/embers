@@ -1068,7 +1068,7 @@ test("Load it brings in an earlier session's handoff as such, and leaves it for 
 test('a reload after a learned TTL expired drops its lapse and rearms on the TTL in force', async ($, on) => {
   const world = engine(on)
   const clock = manualClock(on, T0)
-  memoryStore(on)
+  const store = memoryStore(on)
   world.stepUsage = COLD
 
   await $.session.start(start)
@@ -1089,6 +1089,34 @@ test('a reload after a learned TTL expired drops its lapse and rearms on the TTL
   await $.session.start(start)
   expect(await band($)).toBe(`embers  warm  handoff at ${hhmm(touch + 55 * MINUTE)}`)
   expect(clock.waits.filter(wait => wait.isLive())).toHaveLength(1)
+
+  // Reloaded on another model, whose TTL is not this cache's: the deadline stays.
+  for (const wait of clock.waits) wait.lose()
+  world.model = 'claude-other'
+  store.set('ttl:claude-other', { v: 1, observedMinutes: 5, observedAt: clock.now, source: 'reported' })
+  await $.session.start(start)
+  expect(await band($)).toBe(`embers  warm  handoff at ${hhmm(touch + 55 * MINUTE)}`)
+})
+
+test('a handoff 0.1.0 already offered is not offered again, and a refused mark does not cost the Load', async ($, on) => {
+  const world = engine(on, { answer: 'Load it', turns: 0 })
+  const clock = mock.clock(on, { now: T0 })
+  memoryStore(
+    on,
+    {
+      [`handoff:${ROOT}:legacy`]: { ...handoff({ sessionId: 'legacy', writtenAt: T0 - 90 * MINUTE }), offeredAt: 0 },
+      [`handoff:${ROOT}:old`]: handoff({ sessionId: 'old', writtenAt: T0 - 120 * MINUTE }),
+    },
+    key => key.startsWith('offered:'),
+  )
+  const session = mock.session(on)
+
+  await $.session.start(start)
+  await clock.settle()
+
+  expect(world.asks).toHaveLength(1)
+  expect(world.asks[0]?.question).toContain(hhmm(T0 - 120 * MINUTE))
+  expect(session.appended()).toHaveLength(1)
 })
 
 test('/embers status tallies what handoffs cost and what swaps saved this month', async ($, on) => {

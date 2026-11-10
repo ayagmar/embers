@@ -63,13 +63,14 @@ export function turnEnded(
  * The TTL in force, in ms, with the margin it leaves, which can differ from
  * the one the state was built on: an observed TTL expires after a day. A
  * stored lapse that no longer matches goes, and the cache's end and an armed
- * deadline move to the TTL in force.
+ * deadline move to the TTL in force. A cache touched on another model is left
+ * alone: that TTL is not its own, and the timer checks the model when it fires.
  */
-export function ttlInForce(r: EmbersRun, input: { ttl: number; margin: number }): EmbersRun {
+export function ttlInForce(r: EmbersRun, input: { ttl: number; margin: number; model: string }): EmbersRun {
   const { lapse, phase } = r
   const isStale = lapse !== undefined && lapse.isPending !== true && lapse.afterMinutes * MINUTE !== input.ttl
   const known = isStale ? { ...r, lapse: undefined } : r
-  if (phase.cache === undefined) return known
+  if (phase.cache === undefined || (phase.cache.model !== undefined && phase.cache.model !== input.model)) return known
   const cache: Cache = { ...phase.cache, warmUntil: phase.cache.touchedAt + input.ttl }
   return {
     ...known,

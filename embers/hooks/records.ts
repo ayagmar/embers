@@ -22,7 +22,7 @@ const isObject = (value: unknown): value is Record<string, unknown> =>
 
 function parseHandoff(key: string, value: unknown): HandoffRecord | undefined {
   if (!isObject(value) || value.v !== 1) return undefined
-  const { root, branch, sessionId, turns, writtenAt, contextTokens, text, lastAssistant } = value
+  const { root, branch, sessionId, turns, writtenAt, contextTokens, text, lastAssistant, offeredAt } = value
   if (
     typeof root !== 'string' ||
     typeof branch !== 'string' ||
@@ -32,11 +32,13 @@ function parseHandoff(key: string, value: unknown): HandoffRecord | undefined {
     typeof contextTokens !== 'number' ||
     typeof text !== 'string' ||
     typeof lastAssistant !== 'string' ||
+    (offeredAt !== undefined && typeof offeredAt !== 'number') ||
     key !== handoffKey(root, sessionId)
   ) {
     return undefined
   }
-  return { v: 1, root, branch, sessionId, turns, writtenAt, contextTokens, text, lastAssistant }
+  const record: HandoffRecord = { v: 1, root, branch, sessionId, turns, writtenAt, contextTokens, text, lastAssistant }
+  return offeredAt === undefined ? record : { ...record, offeredAt }
 }
 
 function parseOffered(key: string, value: unknown): OfferedRecord | undefined {
@@ -82,7 +84,8 @@ async function readRecord(
         : key.startsWith('offered:')
           ? parseOffered(key, value)
           : undefined
-  if (record === undefined) await $.store.delete(key)
+  // Cleanup only: a refused delete must not make a bad record block its reader.
+  if (record === undefined) await $.store.delete(key).catch(() => undefined)
   return record
 }
 
@@ -92,14 +95,19 @@ export async function readHandoff($: EngineInterface, key: string): Promise<Hand
 }
 
 /** The TTL record in force at `now`: an observed one past a day reads as absent and is deleted. */
-/** Whether the start offer already showed this handoff. */
+/** Whether the start offer already showed this handoff, here or in 0.1.0. */
 export async function wasOffered($: EngineInterface, record: HandoffRecord): Promise<boolean> {
-  return (await readRecord($, offeredKey(record))) !== undefined
+  return record.offeredAt !== undefined || (await readRecord($, offeredKey(record))) !== undefined
 }
 
+/** Best effort: a refused mark costs one repeat offer, not the person's Load. */
 export async function markOffered($: EngineInterface, record: HandoffRecord): Promise<void> {
   const mark: OfferedRecord = { v: 1, sessionId: record.sessionId, writtenAt: record.writtenAt }
-  await $.store.set(offeredKey(mark), mark)
+  try {
+    await $.store.set(offeredKey(mark), mark)
+  } catch (error) {
+    $.ui.log(`embers: the start offer was not marked shown: ${String(error)}`, { to: 'debug' })
+  }
 }
 
 export async function readTtl($: EngineInterface, key: string, now: number): Promise<TtlRecord | undefined> {

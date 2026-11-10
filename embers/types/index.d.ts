@@ -65,6 +65,8 @@ export type HandoffRecord = {
   contextTokens: number
   text: string
   lastAssistant: string
+  /** Written by embers 0.1.0 when its start offer showed the handoff; read, never written. */
+  offeredAt?: number
 }
 
 /**

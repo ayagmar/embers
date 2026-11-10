@@ -70,12 +70,12 @@ Two things make it worse:
 
 The effort level is not kept: no API reads it while idle. `/effort` disarms the timer and forgets the cache, as a compaction does; a fork still running then is reported as moved on.
 
-`session.start` (which fires on reload too) first moves the cache's end and an armed `deadline` to the TTL in force, and drops a stored `lapse` that no longer matches it (an observed TTL expires after a day). It then re-arms from the `deadline` when the phase is `armed`, firing at once if it has passed. The timer is cancelled at main-loop `prompt.submit` and `turn.start`. When it fires, it re-reads `$.state` and the clock before forking.
+`session.start` (which fires on reload too) first moves the cache's end and an armed `deadline` to the TTL in force, unless the cache was touched on another model, and drops a stored `lapse` that no longer matches it (an observed TTL expires after a day). It then re-arms from the `deadline` when the phase is `armed`, firing at once if it has passed. The timer is cancelled at main-loop `prompt.submit` and `turn.start`. When it fires, it re-reads `$.state` and the clock before forking.
 
 `$.store` (across sessions), one key per record, no index:
 
-- `handoff:<root>:<sessionId>`: `{ v: 1, root, branch, sessionId, turns, writtenAt, contextTokens, text, lastAssistant }`. `lastAssistant` is the last assistant message's text, taken from `$.session.messages()` before the fork, because the fork's view ends at the last request and never sees the final reply. The swap appends it after the handoff.
-- `offered:<sessionId>:<writtenAt>`: `{ v: 1, sessionId, writtenAt }`, the start offer showed that handoff. A newer handoff of the same session has another `writtenAt` and is offered again. embers 0.1.0's retention deletes these keys, so with both versions running a handoff can be offered twice.
+- `handoff:<root>:<sessionId>`: `{ v: 1, root, branch, sessionId, turns, writtenAt, contextTokens, text, lastAssistant, offeredAt? }`. `offeredAt` was written by 0.1.0's start offer; it is still read, so a handoff 0.1.0 offered is not offered again, and never written. `lastAssistant` is the last assistant message's text, taken from `$.session.messages()` before the fork, because the fork's view ends at the last request and never sees the final reply. The swap appends it after the handoff.
+- `offered:<sessionId>:<writtenAt>`: `{ v: 1, sessionId, writtenAt }`, the start offer showed that handoff. Writing it is best effort: a refused write costs a repeat offer, not the Load. A newer handoff of the same session has another `writtenAt` and is offered again. embers 0.1.0's retention deletes these keys, so with both versions running a handoff can be offered twice.
 - `ttl:<model>`: `{ v: 1, observedMinutes, observedAt, source? }`.
 - `stats:<yyyy-mm>` (local time): `{ v: 1, forks, forkCost, swaps, swapSaved, loads }`, in input-token equivalents at a cache read 0.1, a cache write 1.25 and output 5. A fork that reached the API adds its cost; a swap adds 1.25 × (context tokens − the new prefix). `$.store` has no update, so two sessions adding at once can lose one addition.
 

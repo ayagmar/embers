@@ -39,11 +39,11 @@ export const register: Register = (on, options) => {
         'Write a handoff now; `show` shows the handoff, `status` where embers stands; `off` and `on` switch it for this process',
       argumentHint: '[show|status|off|on]',
     })
-    const [now, ttl] = await Promise.all([$.clock.now(), ttlMs($, config)])
+    const [now, ttl, model] = await Promise.all([$.clock.now(), ttlMs($, config), $.session.model()])
     const margin = marginFor(ttl / MINUTE, config.marginMinutes) * MINUTE
     // Fires on reload too: the state survived, the timer and any swap in flight
     // did not, and the TTL it was armed on may have expired since.
-    const s = await apply($, r => ttlInForce(forkFailed(r), { ttl, margin }))
+    const s = await apply($, r => ttlInForce(forkFailed(r), { ttl, margin, model }))
     if (s.isOff) inProcess.isOff = true
     if (s.phase.kind === 'armed') arm($, config, now, s.phase.deadline)
     if (s.phase.cache === undefined) await seedFromHandoff($, ttl)
@@ -117,7 +117,7 @@ export const register: Register = (on, options) => {
     if (e.usage === undefined) return next(e)
     const margin = marginFor(ttl / MINUTE, config.marginMinutes) * MINUTE
     // A stored TTL that expired leaves its lapse in the state, and the band would still claim it.
-    await apply($, ttlInForce, { ttl, margin })
+    await apply($, ttlInForce, { ttl, margin, model })
     const tokens = usage.context.tokens
     const isArmed = !isOff(before) && isInteractive && tokens !== undefined && tokens >= config.minContextTokens
     const s = await apply($, turnEnded, {
