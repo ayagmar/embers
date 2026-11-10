@@ -2,6 +2,96 @@
 
 Claude's prompt cache lapses after a quiet hour (five minutes on some plans), and the next message after that pays to write your whole conversation to the cache again. embers writes a short handoff just before the cache lapses, while reading the conversation is still cheap. When you come back cold, you can continue from the handoff instead of rewriting everything.
 
+## Why
+
+On a 100k-token conversation, in input-token equivalents (a cache read costs 0.1, a cache write 1.25, output 5):
+
+| You come back after the cache lapsed and... | Cost now | Next prompts |
+|---|---|---|
+| send as usual | ~125k: the whole conversation is written to the cache again | 100k prefix |
+| swap to the embers handoff | ~15k for the handoff, written earlier while the cache was warm, plus ~31k to write a 25k prefix | 25k prefix |
+| never come back | ~15k for one handoff | |
+
+embers spends a little before you leave so that coming back costs less. It writes one handoff per idle period and nothing for small conversations.
+
+## How it works
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor You
+    participant CC as Claude Code
+    participant E as embers
+    participant API as Claude API
+
+    You->>CC: a turn ends
+    CC->>API: conversation cached for one TTL (60m)
+    E->>E: set a timer for TTL minus margin (55m)
+    Note over You: you step away
+    E->>API: timer fires: fork over the cached prefix, ask for a handoff
+    API-->>E: handoff in Markdown (cheap cache read, cache renewed)
+    E->>E: store the handoff with the session id and turn count
+    Note over API: another TTL passes and the cache lapses
+    You->>CC: next prompt
+    CC->>E: prompt.submit
+    E->>You: cache is cold: Swap to handoff (~25k), Send as is (100k), Fresh session, Read it first
+    You->>E: Swap to handoff
+    E->>CC: /clear, then append the handoff as the first message
+    You->>CC: send the prompt again
+    CC->>API: request on a 25k prefix instead of 100k
+```
+
+A fork rides the main conversation's cached prefix, so writing the handoff reads the conversation from cache instead of paying to write it. The fork is only made while the cache is still warm; a timer that wakes too late (a laptop that slept) skips it.
+
+What embers tracks for the current session:
+
+```mermaid
+stateDiagram-v2
+    [*] --> idle
+    idle --> armed: turn ends, context above minContextTokens
+    armed --> writing: timer fires, cache still warm
+    armed --> idle: you type, /model, /effort, compaction
+    writing --> ready: handoff stored
+    writing --> idle: fork failed or the conversation moved on
+    ready --> idle: you type (cold prompt: ask, swap or send)
+```
+
+How the code is laid out:
+
+```mermaid
+flowchart LR
+    subgraph host[Claude Code]
+        hooks[hook events<br/>session.start, prompt.submit,<br/>turn.step, turn.complete,<br/>session.compact, /embers]
+        state[($.state<br/>this session)]
+        store[($.store<br/>all sessions)]
+        fork[$.model.fork]
+        ui[$.ui<br/>band, ask, rows, log lines]
+    end
+    subgraph embers[embers/hooks]
+        register[register.tsx<br/>hook handlers]
+        handoff[handoff.ts<br/>timer, fork, swap,<br/>start offer, TTL learning]
+        transitions[state.ts<br/>phase transitions]
+        records[records.ts<br/>stored records, retention]
+        shared[shared.ts<br/>config, prompts, labels, band text]
+        process[process.ts<br/>timer handle, swap lock]
+    end
+    hooks --> register
+    register --> handoff
+    register --> transitions
+    handoff --> transitions
+    handoff --> records
+    handoff --> shared
+    register --> process
+    transitions --> state
+    records --> store
+    handoff --> fork
+    handoff --> ui
+```
+
+- `$.state` holds the phase above, the last cache touch, and what embers learned about the TTL. It survives a reload.
+- `$.store` holds handoffs (`handoff:<folder>:<session>`), handoffs already offered at start (`offered:<session>:<time>`), learned TTLs per model (`ttl:<model>`) and the monthly tally (`stats:<yyyy-mm>`). Handoffs older than 14 days are dropped.
+- The TTL starts at `ttlMinutes`. If the first reply after an idle shorter than that comes back cold twice, embers stores the shorter TTL for that model for a day.
+
 ## Install
 
 From the marketplace, for every session:
