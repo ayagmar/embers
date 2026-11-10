@@ -203,7 +203,10 @@ async function swap($: EngineInterface, record: HandoffRecord, plan: Reshape, re
   inProcess.lastShown = record
   await showHandoff($, record).catch(debug)
   const after = plan.fixed + handoffTokens(record)
-  await addStats($, await $.clock.now(), { swaps: 1, swapSaved: swapSaving(plan.tokens, after) })
+  await $.clock
+    .now()
+    .then(now => addStats($, now, { swaps: 1, swapSaved: swapSaving(plan.tokens, after) }))
+    .catch(debug)
   $.ui.log(
     `embers: swapped to the ${clockTime(record.writtenAt)} handoff, ${k(plan.tokens)} → ~${k(after)} tokens; send your prompt from the box. ${resume}`,
   )
@@ -314,7 +317,12 @@ async function reshape($: EngineInterface, plan: Reshape): Promise<void> {
     resume = `Old conversation: claude --resume ${oldId}`
     await $.command.run({ command: 'clear' })
     // A hook can answer `/clear` without running it: only a new session id proves the clear.
-    if ((await $.session.id()) === oldId) throw new Error('/clear left the conversation in place')
+    const newId = await $.session.id().catch(() => undefined)
+    if (newId === undefined) {
+      $.ui.log(`embers: /clear ran but its result could not be checked; the handoff was not added. ${resume}`)
+      return
+    }
+    if (newId === oldId) throw new Error('/clear left the conversation in place')
     isCleared = true
     await afterClear($)
     if (plan.swapTo === undefined) {
