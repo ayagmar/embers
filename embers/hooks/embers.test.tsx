@@ -46,8 +46,12 @@ type World = {
   placed: string[]
   filled: string[]
   commands: string[]
-  /** The `/clear` rejects, to fail a swap before it starts. */
-  failing: 'clear' | undefined
+  /** `/clear` rejects, or a hook answers it without running it. */
+  failing: 'clear' | 'intercepted-clear' | undefined
+  /** What `$.session.id()` answers; a `/clear` that runs gives a new one. */
+  sessionId: string
+  /** Whether `$.ui.place` finds a surface to draw on. */
+  isPlaceable: boolean
 }
 
 /** Stands for the engine: every `$` call embers makes is answered here. */
@@ -68,11 +72,13 @@ function engine(on: On, overrides: Partial<World> = {}): World {
     filled: [],
     commands: [],
     failing: undefined,
+    sessionId: SESSION,
+    isPlaceable: true,
     ...overrides,
   }
   on('command.register', (_, e) => ({ value: { command: e.name } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
-  on('session.id', () => ({ value: SESSION }))
+  on('session.id', () => ({ value: world.sessionId }))
   on('session.root', () => ({ value: ROOT }))
   on('session.model', () => ({ value: world.model }))
   on('session.surfaces', () => ({ value: world.surfaces }))
@@ -135,6 +141,7 @@ function engine(on: On, overrides: Partial<World> = {}): World {
     return { value: undefined }
   })
   on('ui.place', (_, e) => {
+    if (!world.isPlaceable) return { value: { isPlaced: false, reason: 'no-surface' } }
     world.placed.push(e.id)
     return { value: { isPlaced: true, requestId: e.id } }
   })
@@ -155,6 +162,7 @@ function engine(on: On, overrides: Partial<World> = {}): World {
   on('command.run', (_, e) => {
     if (world.failing === 'clear' && e.command === 'clear') throw new Error('clear failed')
     world.commands.push(e.command)
+    if (e.command === 'clear' && world.failing !== 'intercepted-clear') world.sessionId = `${world.sessionId}+`
     return { text: '' }
   })
   on('prompt.fill', (_, e) => {
@@ -183,10 +191,15 @@ function engine(on: On, overrides: Partial<World> = {}): World {
 }
 
 /** `$.store` beneath the plugin, held in a Map the test reads. */
-function memoryStore(on: On, entries: Record<string, unknown> = {}): Map<string, unknown> {
+function memoryStore(
+  on: On,
+  entries: Record<string, unknown> = {},
+  refuses: (key: string) => boolean = () => false,
+): Map<string, unknown> {
   const store = new Map(Object.entries(entries))
   on('store.get', (_, e) => ({ value: store.get(e.key) }))
   on('store.set', (_, e) => {
+    if (refuses(e.key)) return { deny: 'refused by policy' }
     store.set(e.key, e.value)
     return { value: undefined }
   })
@@ -1066,4 +1079,61 @@ test('/embers status tallies what handoffs cost and what swaps saved this month'
   // The fork read 99k from cache, 300 uncached, 1.2k out: 9.9k + 300 + 6k = 16.2k.
   expect(status.text).toContain('This month: 1 handoff cost ~16k; 1 swap saved ~')
   expect(status.text).toMatch(/Net saved ~\d+k/)
+})
+
+test('a /clear another hook answered without running it is not taken for a swap', async ($, on) => {
+  const world = engine(on, { answer: 'Swap to handoff', contextTokens: undefined, failing: 'intercepted-clear' })
+  const clock = mock.clock(on, { now: T0 + 120 * MINUTE })
+  const store = memoryStore(on, { [KEY]: handoff({}) })
+  const session = mock.session(on)
+
+  await $.session.start(start)
+  await $.prompt.submit({ text: 'go on', ...typed })
+  await clock.settle()
+
+  expect(session.appended()).toEqual([])
+  expect(store.has(KEY)).toBe(true)
+  expect(world.logged.at(-1)).toContain('could not be cleared')
+  await $.prompt.submit({ text: 'go on', ...typed })
+  expect(world.asks).toHaveLength(2)
+})
+
+test('Read it first with nowhere to draw the handoff still sends nothing', async ($, on) => {
+  const world = engine(on, { answer: 'Read it first', contextTokens: undefined, isPlaceable: false })
+  mock.clock(on, { now: T0 + 120 * MINUTE })
+  memoryStore(on, { [KEY]: handoff({}) })
+
+  await $.session.start(start)
+  const dropped = await $.prompt.submit({ text: 'go on', ...typed })
+
+  expect(dropped.drop).toContain('could not be shown; nothing sent')
+  expect(world.commands).toEqual([])
+})
+
+test('a load the host refuses is reported, not counted or shown as loaded', async ($, on) => {
+  const world = engine(on, { answer: 'Load it', turns: 0 })
+  const clock = mock.clock(on, { now: T0 })
+  memoryStore(on, { [`handoff:${ROOT}:old`]: handoff({ sessionId: 'old', writtenAt: T0 - 120 * MINUTE }) })
+  on('session.append', () => ({ deny: 'too large' }))
+
+  await $.session.start(start)
+  await clock.settle()
+
+  expect(world.logged).toEqual(['embers: the handoff was not loaded (too large)'])
+  expect(world.placed).toEqual([])
+  expect((await $.command.run(slash('embers', 'status'))).text).toContain('This month: nothing yet.')
+})
+
+test('a tally the store refuses does not cost the handoff', async ($, on) => {
+  const world = engine(on)
+  const clock = mock.clock(on, { now: T0 })
+  const store = memoryStore(on, {}, key => key.startsWith('stats:'))
+
+  await $.session.start(start)
+  await $.turn.complete(turnEnd)
+  await clock.advance(55 * MINUTE)
+
+  expect(world.forks).toBe(1)
+  expect(store.has(KEY)).toBe(true)
+  expect(await band($)).toContain('embers  handoff ready')
 })

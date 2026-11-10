@@ -112,13 +112,16 @@ export async function writeHandoff($: EngineInterface, config: Config): Promise<
 
   const reply = await $.model.fork({ prompt: handoffPrompt(config.handoffInstructions) })
   const now = await $.clock.now()
+  // Every fork that reached the API is paid for, answered or not.
+  if (reply.isAnswered || reply.reason !== 'nothing-to-fork') {
+    await addStats($, now, { forks: 1, forkCost: forkCost(reply.usage) })
+  }
   if (!reply.isAnswered) {
     await apply($, forkFailed, reply.reason === 'nothing-to-fork' ? undefined : { at: now, usage: reply.usage })
     return reply.reason === 'nothing-to-fork'
       ? { kind: 'none', reason: reply.reason }
       : { kind: 'none', reason: reply.reason, usage: reply.usage }
   }
-  await addStats($, now, { forks: 1, forkCost: forkCost(reply.usage) })
   const [sessionAfter, turnsAfter, s] = await Promise.all([$.session.id(), $.session.turns(), readCurrent($)])
   if (sessionAfter !== sessionId || turnsAfter !== turns || s.phase.kind !== 'writing') {
     // A turn or a /clear that moved on set its own phase; only a stale `writing` is ours.
@@ -193,9 +196,12 @@ async function swap($: EngineInterface, record: HandoffRecord, plan: Reshape, re
     $.ui.log(`embers: the session was cleared but the handoff was refused (${appended.deny}). ${resume}`)
     return
   }
-  await $.store.delete(handoffKey(record.root, record.sessionId))
+  // The handoff is in: what follows is feedback and bookkeeping, and its
+  // failures must not read as a failed swap.
+  const debug = (error: unknown): void => $.ui.log(`embers: after the swap: ${String(error)}`, { to: 'debug' })
+  await $.store.delete(handoffKey(record.root, record.sessionId)).catch(debug)
   inProcess.lastShown = record
-  await showHandoff($, record)
+  await showHandoff($, record).catch(debug)
   const after = plan.fixed + handoffTokens(record)
   await addStats($, await $.clock.now(), { swaps: 1, swapSaved: swapSaving(plan.tokens, after) })
   $.ui.log(
@@ -272,8 +278,13 @@ export async function coldPrompt(
   if (choice === undefined) return { drop: 'embers: nothing sent; your prompt is back in the box' }
   if (choice === 'send') return undefined
   if (choice === 'read' && matching !== undefined) {
-    await showHandoff($, matching)
-    return { drop: 'embers: the handoff is above; your prompt is back in the box, send it to choose' }
+    // The person chose to spend nothing: a display failure must not send the prompt.
+    const isShown = await showHandoff($, matching).catch(() => false)
+    return {
+      drop: isShown
+        ? 'embers: the handoff is above; your prompt is back in the box, send it to choose'
+        : 'embers: the handoff could not be shown; nothing sent, your prompt is back in the box',
+    }
   }
   // The host refuses a compaction or a command under the turn a prompt.submit
   // hook holds, so the prompt is dropped (the engine puts it back in the box)
@@ -296,10 +307,14 @@ type Reshape = { swapTo: HandoffRecord | undefined; tokens: number; fixed: numbe
  * one past the `/clear`.
  */
 async function reshape($: EngineInterface, plan: Reshape): Promise<void> {
-  const resume = `Old conversation: claude --resume ${await $.session.id()}`
+  let resume = ''
   let isCleared = false
   try {
+    const oldId = await $.session.id()
+    resume = `Old conversation: claude --resume ${oldId}`
     await $.command.run({ command: 'clear' })
+    // A hook can answer `/clear` without running it: only a new session id proves the clear.
+    if ((await $.session.id()) === oldId) throw new Error('/clear left the conversation in place')
     isCleared = true
     await afterClear($)
     if (plan.swapTo === undefined) {
@@ -394,10 +409,16 @@ export async function offerHandoff($: EngineInterface, config: Config): Promise<
   const onFile = await readHandoff($, key)
   if (onFile?.writtenAt === offer.writtenAt) await $.store.set(key, { ...onFile, offeredAt: now })
   if (answer !== LOAD) return
-  await $.session.append({ message: { type: 'user', content: [{ type: 'text', text: compose(offer, 'load') }] } })
+  const appended = await $.session
+    .append({ message: { type: 'user', content: [{ type: 'text', text: compose(offer, 'load') }] } })
+    .catch((error: unknown) => ({ deny: String(error) }))
+  if (appended.deny !== undefined) {
+    $.ui.log(`embers: the handoff was not loaded (${appended.deny})`)
+    return
+  }
   await addStats($, now, { loads: 1 })
   inProcess.lastShown = offer
-  await showHandoff($, offer)
+  await showHandoff($, offer).catch(() => false)
   $.ui.log(`embers: loaded the ${clockTime(offer.writtenAt)} handoff (~${k(handoffTokens(offer))} tokens)`)
 }
 

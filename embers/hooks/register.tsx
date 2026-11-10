@@ -20,6 +20,7 @@ import {
   apply,
   forkFailed,
   isOff,
+  lapseObserved,
   prefixReplaced,
   promptStarted,
   readRun,
@@ -112,6 +113,10 @@ export const register: Register = (on, options) => {
     // No usage: an API error or an interrupt before any request counted. The
     // cache was not read, so the last touch stands and nothing is armed.
     if (e.usage === undefined) return next(e)
+    // A stored TTL that expired leaves its lapse in the state, and the band would still claim it.
+    if (before.lapse !== undefined && before.lapse.isPending !== true && before.lapse.afterMinutes * MINUTE !== ttl) {
+      await apply($, lapseObserved, undefined)
+    }
     const tokens = usage.context.tokens
     const margin = marginFor(ttl / MINUTE, config.marginMinutes) * MINUTE
     const isArmed = !isOff(before) && isInteractive && tokens !== undefined && tokens >= config.minContextTokens

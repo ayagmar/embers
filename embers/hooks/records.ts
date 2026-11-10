@@ -98,14 +98,19 @@ export async function readStats($: EngineInterface, now: number): Promise<StatsR
 }
 
 /**
- * Adds to this month's figures. Two sessions adding at once can lose one
- * addition: `$.store` has no update, and the tally is an estimate anyway.
+ * Adds to this month's figures, best effort: a failed write must not cost a
+ * handoff or a swap. Two sessions adding at once can lose one addition:
+ * `$.store` has no update, and the tally is an estimate anyway.
  */
 export async function addStats($: EngineInterface, now: number, add: Partial<Omit<StatsRecord, 'v'>>): Promise<void> {
-  const stats = await readStats($, now)
-  const next: StatsRecord = { ...stats }
-  for (const field of STATS_FIELDS) next[field] = stats[field] + (add[field] ?? 0)
-  await $.store.set(statsKey(now), next)
+  try {
+    const stats = await readStats($, now)
+    const next: StatsRecord = { ...stats }
+    for (const field of STATS_FIELDS) next[field] = stats[field] + (add[field] ?? 0)
+    await $.store.set(statsKey(now), next)
+  } catch (error) {
+    $.ui.log(`embers: the monthly tally was not updated: ${String(error)}`, { to: 'debug' })
+  }
 }
 
 /** Every valid handoff written from `root`, newest first. */
