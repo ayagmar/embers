@@ -4,11 +4,11 @@ Updated 2026-11-10.
 
 ## State
 
-embers 0.1.0 is on `main`, tagged `embers--v0.1.0`, and listed in the `ayagmar/claude-mods` marketplace. 24 tests; `npm run check` clean. Not yet run for long with default settings.
+embers 0.2.0 is on `main`, tagged `embers--v0.2.0`, and listed in the `ayagmar/claude-mods` marketplace. 0.2.0 adds, over 0.1.0: the handoff drawn as a placed Markdown row, `/embers show`, swap failures reported with the resume command, log lines instead of toasts, errored turns not counted as cache reads, Esc on the cold ask sends nothing, "Read it first" and sizes in the ask labels, observed TTLs that expire after a day and are reconciled on reload, a loaded handoff under its own header and kept for its session with the offer marked under its own key, Markdown handoffs under fixed headings, and a monthly tally in `/embers status`. 38 tests; `npm run check` clean. Not yet run for long with default settings.
 
 ## In flight
 
-PR #3, `fix/swap-feedback`: the handoff drawn as a placed Markdown row, `/embers show`, swap failures reported, log lines instead of toasts, errored turns not counted as cache reads; Esc on the cold ask sends nothing; "Read it first" and sizes in the ask labels; observed TTLs expire after a day; a loaded handoff gets its own header and stays for its session; Markdown handoffs under fixed headings; a monthly tally in `/embers status`.
+Nothing.
 
 ## Next
 
