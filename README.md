@@ -1,100 +1,24 @@
 # embers
 
-Claude's prompt cache lapses after a quiet hour (five minutes on some plans), and the next message after that pays to write your whole conversation to the cache again. embers writes a short handoff just before the cache lapses, while reading the conversation is still cheap. When you come back cold, you can continue from the handoff instead of rewriting everything.
+A Claude Code plugin that makes coming back to a long conversation cheaper.
 
-## Why
+Claude keeps your conversation in a cache for about an hour after your last message (five minutes on some plans). Step away longer and the next message pays to load the whole conversation again, which on a long session is the most expensive message of the day. embers notices when you've gone quiet, writes a short summary of where you were just before the cache expires, and when you come back offers to continue from that summary instead. embers calls the summary a handoff.
 
-On a 100k-token conversation, in input-token equivalents (a cache read costs 0.1, a cache write 1.25, output 5):
+## What it saves
 
-| You come back after the cache lapsed and... | Cost now | Next prompts |
+Coming back to a 100k-token conversation after the cache has expired, counted in input tokens:
+
+| When you come back you... | Costs now | Each later message reads |
 |---|---|---|
-| send as usual | ~125k: the whole conversation is written to the cache again | 100k prefix |
-| swap to the embers handoff | ~15k for the handoff, written earlier while the cache was warm, plus ~31k to write a 25k prefix | 25k prefix |
-| never come back | ~15k for one handoff | |
+| send as usual, without embers | ~125k | 100k |
+| switch to the embers summary | ~46k (15k for the summary, written while you were away, plus 31k to start fresh from it) | 25k |
+| never come back | ~15k for the summary | |
 
-embers spends a little before you leave so that coming back costs less. It writes one handoff per idle period and nothing for small conversations.
-
-## How it works
-
-```mermaid
-sequenceDiagram
-    autonumber
-    actor You
-    participant CC as Claude Code
-    participant E as embers
-    participant API as Claude API
-
-    You->>CC: a turn ends
-    CC->>API: conversation cached for one TTL (60m)
-    E->>E: set a timer for TTL minus margin (55m)
-    Note over You: you step away
-    E->>API: timer fires: fork over the cached prefix, ask for a handoff
-    API-->>E: handoff in Markdown (cheap cache read, cache renewed)
-    E->>E: store the handoff with the session id and turn count
-    Note over API: another TTL passes and the cache lapses
-    You->>CC: next prompt
-    CC->>E: prompt.submit
-    E->>You: cache is cold: Swap to handoff (~25k), Send as is (100k), Fresh session, Read it first
-    You->>E: Swap to handoff
-    E->>CC: /clear, then append the handoff as the first message
-    You->>CC: send the prompt again
-    CC->>API: request on a 25k prefix instead of 100k
-```
-
-A fork rides the main conversation's cached prefix, so writing the handoff reads the conversation from cache instead of paying to write it. The timer forks only while the cache should still be warm, and skips the fork if it wakes too late (a laptop that slept). `/embers` can write a handoff on a cold cache, after asking, since that rereads the whole conversation.
-
-What embers tracks for the current session:
-
-```mermaid
-stateDiagram-v2
-    [*] --> idle
-    idle --> armed: turn ends, context above minContextTokens
-    armed --> writing: timer fires, cache still warm
-    armed --> idle: you type, /model, /effort, compaction
-    writing --> ready: handoff stored
-    writing --> idle: fork failed or the conversation moved on
-    ready --> idle: you type (cold prompt: ask, swap or send)
-```
-
-How the code is laid out:
-
-```mermaid
-flowchart LR
-    subgraph host[Claude Code]
-        hooks[hook events<br/>session.start, prompt.submit,<br/>turn.step, turn.complete,<br/>session.compact, /embers]
-        state[($.state<br/>this session)]
-        store[($.store<br/>all sessions)]
-        fork[$.model.fork]
-        ui[$.ui<br/>band, ask, rows, log lines]
-    end
-    subgraph embers[embers/hooks]
-        register[register.tsx<br/>hook handlers]
-        handoff[handoff.ts<br/>timer, fork, swap,<br/>start offer, TTL learning]
-        transitions[state.ts<br/>phase transitions]
-        records[records.ts<br/>stored records, retention]
-        shared[shared.ts<br/>config, prompts, labels, band text]
-        process[process.ts<br/>timer handle, swap lock]
-    end
-    hooks --> register
-    register --> handoff
-    register --> transitions
-    handoff --> transitions
-    handoff --> records
-    handoff --> shared
-    register --> process
-    transitions --> state
-    records --> store
-    handoff --> fork
-    handoff --> ui
-```
-
-- `$.state` holds the phase above, the last cache touch, and what embers learned about the TTL. It survives a reload.
-- `$.store` holds handoffs (`handoff:<folder>:<session>`), handoffs already offered at start (`offered:<session>:<time>`), learned TTLs per model (`ttl:<model>`) and the monthly tally (`stats:<yyyy-mm>`). Handoffs older than 14 days are dropped.
-- The TTL starts at `ttlMinutes`. If the first reply after an idle shorter than that comes back cold twice, embers stores the shorter TTL for that model for a day.
+embers writes at most one summary per break, and none for short conversations.
 
 ## Install
 
-From the marketplace, for every session:
+From the marketplace:
 
 ```
 /plugin marketplace add ayagmar/claude-mods
@@ -108,11 +32,11 @@ git clone https://github.com/ayagmar/embers ~/projects/embers
 claude --plugin-dir ~/projects/embers/embers
 ```
 
-To load a clone in every session, set `CLAUDE_CODE_PLUGIN_DIRS` to `~/projects/embers/embers` in your shell or in the `env` block of `~/.claude/settings.json`.
+To load the clone in every session, set `CLAUDE_CODE_PLUGIN_DIRS` to `~/projects/embers/embers` in your shell or in the `env` block of `~/.claude/settings.json`.
 
-## What you see
+## Using it
 
-A line above the prompt, once the context is big enough:
+There is nothing to do while you work. Once a conversation is long enough, a line above the prompt shows what embers is doing:
 
 ```
 embers  warm  handoff at 12:55
@@ -120,51 +44,57 @@ embers  writing handoff…
 embers  handoff ready  12:55, 118k tokens, warm until 13:55
 ```
 
-If you send a prompt after the cache has gone cold, embers asks what to do and shows what each choice costs:
+### Coming back after a break
 
-- **Swap to handoff**: clear the session and continue from the handoff. Offered only when a handoff matches this conversation. Send your prompt again from the box.
-- **Send as is**: send the prompt and rewrite the cache.
-- **Fresh session**: clear the session with no handoff. Send your prompt again from the box.
-- **Read it first**: show the handoff and change nothing. Send your prompt again to choose.
+If you send a message after the cache has expired, embers holds it and asks what to do. Each choice shows how many tokens it will cost:
 
-Each label carries the tokens the next request writes, such as `Send as is (100k)`. Pressing Esc, or typing your own answer, sends nothing and leaves your prompt in the box.
+- **Swap to handoff**: start a clean conversation from the summary. Your message stays in the box; send it again.
+- **Send as is**: send the message and pay to reload the full conversation.
+- **Fresh session**: start a clean conversation with no summary. Send your message again.
+- **Read it first**: show the summary without changing anything.
 
-When a new session starts in a folder where an earlier one left a handoff on the same branch, embers offers to load it. Choose **Load it** or **Skip**. The model is told it comes from an earlier session and that files may have changed. The earlier session keeps its handoff, in case it is still open.
+Press Esc to cancel; nothing is sent and your message stays in the box. Attachments need to be pasted again after a swap or fresh start.
 
-After a swap or a load, the handoff is drawn in the transcript as a block you can read, with a line naming the old conversation: `claude --resume <id>` returns to it. If a swap fails partway, a line says what happened.
+After a swap, the summary appears in the transcript so you can see what the model was given, along with a `claude --resume <id>` command that takes you back to the full old conversation.
 
-Each handoff adds a line with its cost, such as `embers: Handoff written; read 26k from cache, wrote 7.6k, 937 out`.
+### Starting a new session
+
+If you open a new session in a folder where an earlier session left a summary on the same git branch, embers offers to load it. Choose **Load it** or **Skip**. The model is told the summary is from an earlier session and that files may have changed since.
+
+### What it costs
+
+Each summary prints one line with its cost, such as `embers: Handoff written; read 26k from cache, wrote 7.6k, 937 out`. `/embers status` shows this month's total: what summaries cost and what swaps saved.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `/embers` | Writes a handoff now, and asks first if the cache is cold. |
-| `/embers show` | Draws this session's handoff, or the one it swapped to, for you to read. The model is not sent it. |
-| `/embers status` | Shows on or off, the cache, the phase, the last fork, the TTL, this folder's handoffs, and this month's tally: what handoffs cost and what swaps saved. |
-| `/embers off` | Turns embers off until you run `/embers on` or quit. |
-| `/embers on` | Turns it back on; the next turn to end arms it. |
+| `/embers` | Write a summary now. Asks first if the cache has already expired, since that costs more. |
+| `/embers show` | Show this session's summary. The model doesn't see it. |
+| `/embers status` | Show whether embers is on, the cache state, saved summaries for this folder, and this month's costs and savings. |
+| `/embers off` | Turn embers off until `/embers on` or you quit. |
+| `/embers on` | Turn it back on. |
 
-## Options
+## Settings
 
-Set these in the plugin's config menu.
+Change these in the plugin's config menu.
 
-| Option | Default | Meaning |
+| Setting | Default | What it does |
 |---|---|---|
-| `ttlMinutes` | 60 | How long the cache is assumed to last. A TTL reported by Claude Code or observed by embers overrides it. |
-| `marginMinutes` | 5 | How long before the TTL the handoff is written. Cut for short TTLs. |
-| `minContextTokens` | 40000 | Below this context size, embers does nothing. |
-| `minSavingTokens` | 20000 | A swap must shrink the context by at least this much. |
-| `coldMode` | `ask` | On a cold prompt: `ask`, `swap` without asking when a handoff matches, or `send` without asking. |
-| `offerOnStart` | true | Offer an earlier handoff when a session starts. |
-| `showBand` | true | Draw the line above the prompt. |
-| `handoffInstructions` | empty | Added to the handoff prompt as its last sentence. |
+| `ttlMinutes` | 60 | How long the cache is assumed to last. embers adjusts this if it sees the cache expiring sooner. |
+| `marginMinutes` | 5 | How many minutes before expiry to write the summary. |
+| `minContextTokens` | 40000 | Conversations smaller than this are left alone. |
+| `minSavingTokens` | 20000 | Don't offer a swap unless it saves at least this many tokens. |
+| `coldMode` | `ask` | What to do when you come back: `ask`, `swap` automatically when a summary exists, or `send` without asking. |
+| `offerOnStart` | true | Offer an earlier session's summary when a new session starts. |
+| `showBand` | true | Show the status line above the prompt. |
+| `handoffInstructions` | empty | Extra instructions added to the end of the summary prompt. |
 
-## Cost
+Summaries older than 14 days are deleted.
 
-A handoff reads the cached conversation and, in the runs measured, writes little to the cache: 7.6k tokens after a conversation's first turn, and none after a turn of eight file reads that added 46k tokens. A session you abandon costs one handoff.
+## How it works
 
-The design is in `docs/DESIGN.md`.
+See [docs/DESIGN.md](docs/DESIGN.md) for the design, diagrams and stored data.
 
 ## Developing
 
