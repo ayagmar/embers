@@ -204,6 +204,7 @@ function memoryStore(
     return { value: undefined }
   })
   on('store.delete', (_, e) => {
+    if (refuses(e.key)) return { deny: 'refused by policy' }
     store.delete(e.key)
     return { value: undefined }
   })
@@ -1059,8 +1060,79 @@ test("Load it brings in an earlier session's handoff as such, and leaves it for 
   expect(row).toContain('A handoff from an earlier session')
   expect(row).not.toContain('This conversation was replaced')
   expect(await placedText($, world)).toContain('ship v2')
-  // Session "old" may still be open: its handoff stays, marked so it is not offered again.
-  expect(store.get(oldKey)).toMatchObject({ sessionId: 'old', offeredAt: T0 })
+  // Session "old" may still be open: its handoff stays as it wrote it, and a
+  // mark of its own keeps it from being offered again.
+  expect(store.get(oldKey)).toEqual(handoff({ sessionId: 'old', writtenAt: T0 - 120 * MINUTE, text: 'ship v2' }))
+  expect(store.get(`offered:old:${T0 - 120 * MINUTE}`)).toBeDefined()
+})
+
+test('a reload after a learned TTL expired drops its lapse and rearms on the TTL in force', async ($, on) => {
+  const world = engine(on)
+  const clock = manualClock(on, T0)
+  const store = memoryStore(on)
+  world.stepUsage = COLD
+
+  await $.session.start(start)
+  await $.turn.complete(turnEnd)
+  for (const _ of [1, 2]) {
+    clock.now += 10 * MINUTE
+    await step($)
+    await $.turn.complete(turnEnd)
+  }
+  const touch = T0 + 20 * MINUTE
+  expect(await band($)).toBe(
+    `embers  warm  handoff at ${hhmm(touch + 4 * MINUTE)}  cache lapsed after 5m  margin now 1m`,
+  )
+
+  // A day on, the reload loses the timer and the observed 5m has expired.
+  for (const wait of clock.waits) wait.lose()
+  clock.now = touch + 24 * 60 * MINUTE + MINUTE
+  await $.session.start(start)
+  expect(await band($)).toBe(`embers  warm  handoff at ${hhmm(touch + 55 * MINUTE)}`)
+  expect(clock.waits.filter(wait => wait.isLive())).toHaveLength(1)
+
+  // Reloaded on another model, whose TTL is not this cache's: the deadline stays.
+  for (const wait of clock.waits) wait.lose()
+  world.model = 'claude-other'
+  store.set('ttl:claude-other', { v: 1, observedMinutes: 5, observedAt: clock.now, source: 'reported' })
+  await $.session.start(start)
+  expect(await band($)).toBe(`embers  warm  handoff at ${hhmm(touch + 55 * MINUTE)}`)
+})
+
+test('an expired offer mark the store will not delete does not stop the handoff', async ($, on) => {
+  engine(on)
+  const clock = mock.clock(on, { now: T0 })
+  const store = memoryStore(on, { 'offered:gone:0': { v: 1, sessionId: 'gone', writtenAt: 0 } }, key =>
+    key.startsWith('offered:'),
+  )
+
+  await $.session.start(start)
+  await $.turn.complete(turnEnd)
+  await clock.advance(55 * MINUTE)
+
+  expect(store.has(KEY)).toBe(true)
+  expect(await band($)).toContain('handoff ready')
+})
+
+test('a handoff 0.1.0 already offered is not offered again, and a refused mark does not cost the Load', async ($, on) => {
+  const world = engine(on, { answer: 'Load it', turns: 0 })
+  const clock = mock.clock(on, { now: T0 })
+  memoryStore(
+    on,
+    {
+      [`handoff:${ROOT}:legacy`]: { ...handoff({ sessionId: 'legacy', writtenAt: T0 - 90 * MINUTE }), offeredAt: 0 },
+      [`handoff:${ROOT}:old`]: handoff({ sessionId: 'old', writtenAt: T0 - 120 * MINUTE }),
+    },
+    key => key.startsWith('offered:'),
+  )
+  const session = mock.session(on)
+
+  await $.session.start(start)
+  await clock.settle()
+
+  expect(world.asks).toHaveLength(1)
+  expect(world.asks[0]?.question).toContain(hhmm(T0 - 120 * MINUTE))
+  expect(session.appended()).toHaveLength(1)
 })
 
 test('/embers status tallies what handoffs cost and what swaps saved this month', async ($, on) => {
