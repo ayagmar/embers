@@ -1,11 +1,19 @@
 import type { EngineInterface } from 'claude-code'
 
-import type { HandoffRecord, TtlRecord } from '../types'
+import type { HandoffRecord, StatsRecord, TtlRecord } from '../types'
 
-const RETAIN_MS = 14 * 86_400_000
+const DAY = 86_400_000
+const RETAIN_MS = 14 * DAY
+/** An observed TTL can come from cold reads that were not a lapse; it is learned again within a day if it was real. */
+const OBSERVED_TTL_MS = DAY
 
 export const handoffKey = (root: string, sessionId: string): string => `handoff:${root}:${sessionId}`
 export const ttlKey = (model: string): string => `ttl:${model}`
+const pad = (n: number): string => String(n).padStart(2, '0')
+export const statsKey = (now: number): string => {
+  const at = new Date(now)
+  return `stats:${at.getFullYear()}-${pad(at.getMonth() + 1)}`
+}
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -33,23 +41,37 @@ function parseHandoff(key: string, value: unknown): HandoffRecord | undefined {
 
 function parseTtl(value: unknown): TtlRecord | undefined {
   if (!isObject(value) || value.v !== 1) return undefined
-  const { observedMinutes, observedAt } = value
+  const { observedMinutes, observedAt, source } = value
   if (typeof observedMinutes !== 'number' || typeof observedAt !== 'number') return undefined
-  return { v: 1, observedMinutes, observedAt }
+  if (source !== undefined && source !== 'reported') return undefined
+  return source === undefined ? { v: 1, observedMinutes, observedAt } : { v: 1, observedMinutes, observedAt, source }
+}
+
+const STATS_FIELDS = ['forks', 'forkCost', 'swaps', 'swapSaved', 'loads'] as const
+export const NO_STATS: StatsRecord = { v: 1, forks: 0, forkCost: 0, swaps: 0, swapSaved: 0, loads: 0 }
+
+function parseStats(value: unknown): StatsRecord | undefined {
+  if (!isObject(value) || value.v !== 1) return undefined
+  return STATS_FIELDS.every(field => typeof value[field] === 'number') ? (value as StatsRecord) : undefined
 }
 
 /**
  * The one reader of `$.store`: a record whose key kind, `v` or shape does not
  * check out reads as absent and is deleted.
  */
-async function readRecord($: EngineInterface, key: string): Promise<HandoffRecord | TtlRecord | undefined> {
+async function readRecord(
+  $: EngineInterface,
+  key: string,
+): Promise<HandoffRecord | TtlRecord | StatsRecord | undefined> {
   const value = await $.store.get(key)
   if (value === undefined) return undefined
   const record = key.startsWith('handoff:')
     ? parseHandoff(key, value)
     : key.startsWith('ttl:')
       ? parseTtl(value)
-      : undefined
+      : key.startsWith('stats:')
+        ? parseStats(value)
+        : undefined
   if (record === undefined) await $.store.delete(key)
   return record
 }
@@ -59,9 +81,36 @@ export async function readHandoff($: EngineInterface, key: string): Promise<Hand
   return record !== undefined && 'root' in record ? record : undefined
 }
 
-export async function readTtl($: EngineInterface, key: string): Promise<TtlRecord | undefined> {
+/** The TTL record in force at `now`: an observed one past a day reads as absent and is deleted. */
+export async function readTtl($: EngineInterface, key: string, now: number): Promise<TtlRecord | undefined> {
   const record = await readRecord($, key)
-  return record !== undefined && 'observedMinutes' in record ? record : undefined
+  if (record === undefined || !('observedMinutes' in record)) return undefined
+  if (record.source !== 'reported' && now - record.observedAt > OBSERVED_TTL_MS) {
+    await $.store.delete(key)
+    return undefined
+  }
+  return record
+}
+
+export async function readStats($: EngineInterface, now: number): Promise<StatsRecord> {
+  const record = await readRecord($, statsKey(now))
+  return record !== undefined && 'forkCost' in record ? record : NO_STATS
+}
+
+/**
+ * Adds to this month's figures, best effort: a failed write must not cost a
+ * handoff or a swap. Two sessions adding at once can lose one addition:
+ * `$.store` has no update, and the tally is an estimate anyway.
+ */
+export async function addStats($: EngineInterface, now: number, add: Partial<Omit<StatsRecord, 'v'>>): Promise<void> {
+  try {
+    const stats = await readStats($, now)
+    const next: StatsRecord = { ...stats }
+    for (const field of STATS_FIELDS) next[field] = stats[field] + (add[field] ?? 0)
+    await $.store.set(statsKey(now), next)
+  } catch (error) {
+    $.ui.log(`embers: the monthly tally was not updated: ${String(error)}`, { to: 'debug' })
+  }
 }
 
 /** Every valid handoff written from `root`, newest first. */
@@ -113,7 +162,8 @@ export async function sweep($: EngineInterface, now: number, ttlMs: number): Pro
 
 /** The TTL in force for the session's model: an observed or engine-reported one, else the configured one. */
 export async function ttlMinutes($: EngineInterface, configured: number): Promise<number> {
-  const record = await readTtl($, ttlKey(await $.session.model()))
+  const [model, now] = await Promise.all([$.session.model(), $.clock.now()])
+  const record = await readTtl($, ttlKey(model), now)
   return record?.observedMinutes ?? configured
 }
 

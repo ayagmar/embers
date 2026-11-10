@@ -1,15 +1,20 @@
 # Status
 
-Updated 2026-11-08.
+Updated 2026-11-10.
 
 ## State
 
 embers 0.1.0 is on `main`, tagged `embers--v0.1.0`, and listed in the `ayagmar/claude-mods` marketplace. 24 tests; `npm run check` clean. Not yet run for long with default settings.
 
+## In flight
+
+PR #3, `fix/swap-feedback`: the handoff drawn as a placed Markdown row, `/embers show`, swap failures reported, log lines instead of toasts, errored turns not counted as cache reads; Esc on the cold ask sends nothing; "Read it first" and sizes in the ask labels; observed TTLs expire after a day; a loaded handoff gets its own header and stays for its session; Markdown handoffs under fixed headings; a monthly tally in `/embers status`.
+
 ## Next
 
-1. Run it with default settings for a few days and watch the fork toasts.
+1. Run it with default settings for a few days and watch the fork lines and the monthly tally.
 2. Add `author` and an icon to the manifest before any wider publishing.
+3. From the audit, not yet done: git HEAD in the handoff and a staleness note on load; handoff history with `/embers show <n>`; a cold band once the cache lapses; an opt-out of automatic forks for worker sessions.
 
 ## Decisions
 

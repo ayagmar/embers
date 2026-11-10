@@ -8,6 +8,8 @@ const SESSION = 'session-1'
 const MINUTE = 60_000
 const T0 = Date.UTC(2026, 10, 8, 12, 0)
 const KEY = `handoff:${ROOT}:${SESSION}`
+/** A fork's reply as the model writes one: headed sections, lists, past a log line's 2000 characters. */
+const FORK_TEXT = `## Goal\n\nHANDOFF: release v2 is next\n\n## State\n\n${'- a step done, with its path and figures\n'.repeat(60)}`
 
 const WARM: ModelUsage = {
   input_tokens: 300,
@@ -38,11 +40,18 @@ type World = {
   forkGate: Promise<void> | undefined
   asks: { question: string; labels: string[] }[]
   compactions: SessionCompactInput[]
-  toasts: string[]
   /** Lines `$.ui.log` put in the transcript. */
   logged: string[]
+  /** Ids of the rows `$.ui.place` put in the transcript. */
+  placed: string[]
   filled: string[]
   commands: string[]
+  /** `/clear` rejects, or a hook answers it without running it. */
+  failing: 'clear' | 'intercepted-clear' | undefined
+  /** What `$.session.id()` answers; a `/clear` that runs gives a new one. */
+  sessionId: string
+  /** Whether `$.ui.place` finds a surface to draw on. */
+  isPlaceable: boolean
 }
 
 /** Stands for the engine: every `$` call embers makes is answered here. */
@@ -58,15 +67,18 @@ function engine(on: On, overrides: Partial<World> = {}): World {
     forkGate: undefined,
     asks: [],
     compactions: [],
-    toasts: [],
     logged: [],
+    placed: [],
     filled: [],
     commands: [],
+    failing: undefined,
+    sessionId: SESSION,
+    isPlaceable: true,
     ...overrides,
   }
   on('command.register', (_, e) => ({ value: { command: e.name } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
-  on('session.id', () => ({ value: SESSION }))
+  on('session.id', () => ({ value: world.sessionId }))
   on('session.root', () => ({ value: ROOT }))
   on('session.model', () => ({ value: world.model }))
   on('session.surfaces', () => ({ value: world.surfaces }))
@@ -119,21 +131,28 @@ function engine(on: On, overrides: Partial<World> = {}): World {
   on('model.fork', async () => {
     world.forks += 1
     await world.forkGate
-    return { value: { isAnswered: true, text: 'HANDOFF: release v2 is next', usage: WARM } }
-  })
-  on('ui.toast', (_, e) => {
-    world.toasts.push(e.text)
-    return { value: undefined }
+    return { value: { isAnswered: true, text: FORK_TEXT, usage: WARM } }
   })
   on('ui.log', (_, e) => {
-    if (e.to === 'transcript') world.logged.push(e.text)
+    if (e.to !== 'transcript') return { value: undefined }
+    // The terminal draws one line of 2000 characters: anything longer is mangled.
+    if (e.text.includes('\n') || e.text.length > 2000) throw new Error(`a log line the terminal mangles: ${e.text}`)
+    world.logged.push(e.text)
     return { value: undefined }
+  })
+  on('ui.place', (_, e) => {
+    if (!world.isPlaceable) return { value: { isPlaced: false, reason: 'no-surface' } }
+    world.placed.push(e.id)
+    return { value: { isPlaced: true, requestId: e.id } }
   })
   on('tool.call', { tool: 'AskUserQuestion' }, (_, e) => {
     const asked = e.questions[0]
     if (asked === undefined) throw new Error('no question')
-    world.asks.push({ question: asked.question, labels: asked.options.map(option => option.label) })
-    return { result: { questions: e.questions, answers: { [asked.question]: world.answer } } }
+    const labels = asked.options.map(option => option.label)
+    world.asks.push({ question: asked.question, labels })
+    // `answer` names an option by the start of its label, which may carry a size; else it is typed under "Other".
+    const answer = labels.find(label => label.startsWith(world.answer)) ?? world.answer
+    return { result: { questions: e.questions, answers: { [asked.question]: answer } } }
   })
   on('session.compact', (_, e) => {
     world.compactions.push(e)
@@ -141,7 +160,9 @@ function engine(on: On, overrides: Partial<World> = {}): World {
   })
   on('prompt.submit', (_, e) => ({ text: e.text }))
   on('command.run', (_, e) => {
+    if (world.failing === 'clear' && e.command === 'clear') throw new Error('clear failed')
     world.commands.push(e.command)
+    if (e.command === 'clear' && world.failing !== 'intercepted-clear') world.sessionId = `${world.sessionId}+`
     return { text: '' }
   })
   on('prompt.fill', (_, e) => {
@@ -170,10 +191,15 @@ function engine(on: On, overrides: Partial<World> = {}): World {
 }
 
 /** `$.store` beneath the plugin, held in a Map the test reads. */
-function memoryStore(on: On, entries: Record<string, unknown> = {}): Map<string, unknown> {
+function memoryStore(
+  on: On,
+  entries: Record<string, unknown> = {},
+  refuses: (key: string) => boolean = () => false,
+): Map<string, unknown> {
   const store = new Map(Object.entries(entries))
   on('store.get', (_, e) => ({ value: store.get(e.key) }))
   on('store.set', (_, e) => {
+    if (refuses(e.key)) return { deny: 'refused by policy' }
     store.set(e.key, e.value)
     return { value: undefined }
   })
@@ -238,7 +264,14 @@ function stateStartsOver(on: On): () => void {
 const hhmm = (ms: number): string => new Date(ms).toTimeString().slice(0, 5)
 
 const start = { cwd: ROOT, surface: 'terminal', isInteractive: true } as const
-const turnEnd = { answer: '', durationMs: 1, isAborted: false, turnId: 't', reason: 'answer' } as const
+const turnEnd = {
+  answer: '',
+  durationMs: 1,
+  isAborted: false,
+  turnId: 't',
+  reason: 'answer',
+  usage: { ...WARM, model: 'claude-test' },
+} as const
 const typed = { wait: false, origin: { kind: 'composer' } } as const
 const MODEL_SWITCH = {
   from_model: 'claude-test',
@@ -277,6 +310,7 @@ async function band($: Engine): Promise<string> {
     component: 'AbovePrompt',
     props: {
       hasSurvey: false,
+      isCollapsed: false,
       isWorking: false,
       maxRows: 10,
       bodyColumns: 120,
@@ -287,6 +321,21 @@ async function band($: Engine): Promise<string> {
   const text = (await ui.find({ type: 'Text', text: /embers/ }))?.text ?? ''
   await ui.unmount()
   return text
+}
+
+/** The Markdown the last placed row draws, '' when embers draws none. */
+async function placedText($: Engine, world: World): Promise<string> {
+  const id = world.placed.at(-1)
+  if (id === undefined) return ''
+  const ui = await $.ui.mount({
+    plugin: 'embers',
+    surface: 'terminal',
+    component: 'Placed',
+    props: { id, plugin: 'embers' },
+  })
+  const text = (await ui.find({ type: 'Markdown' }))?.props.text
+  await ui.unmount()
+  return typeof text === 'string' ? text : ''
 }
 
 /** The main loop's first request of a turn, read to its end. */
@@ -319,7 +368,10 @@ test('a cold prompt with a matching handoff swaps to it without a model call', a
   await clock.settle()
 
   expect(dropped.drop).toContain('swapping to the handoff')
-  expect(world.asks[0]?.labels).toEqual(['Swap to handoff', 'Send as is', 'Fresh session'])
+  // Sending rewrites 100k; Fresh writes the 20k of system and tools; the swap adds the handoff.
+  const [swapLabel, ...rest] = world.asks[0]?.labels ?? []
+  expect(swapLabel).toMatch(/^Swap to handoff \(~2\dk\)$/)
+  expect(rest).toEqual(['Send as is (100k)', 'Fresh session (~20k)', 'Read it first'])
   expect(world.commands).toEqual(['clear'])
   const rows = session.appended().map(row => JSON.stringify(row.message.content))
   expect(rows).toHaveLength(1)
@@ -331,8 +383,8 @@ test('a cold prompt with a matching handoff swaps to it without a model call', a
   expect(world.filled).toEqual([])
   expect(store.has(KEY)).toBe(false)
   // The old conversation stays reachable, and the person can read what the model now holds.
-  expect(world.toasts.at(-1)).toContain(`claude --resume ${SESSION}`)
-  expect(world.logged.some(line => line.includes('HANDOFF: release v2 is next'))).toBe(true)
+  expect(world.logged.at(-1)).toContain(`claude --resume ${SESSION}`)
+  expect(await placedText($, world)).toContain('HANDOFF: release v2 is next')
   // The prompt sent from the box enters on the short prefix, unasked.
   await $.prompt.submit({ text: 'go on', ...typed })
   expect(world.asks).toHaveLength(1)
@@ -391,7 +443,7 @@ test('a /clear typed by the person drops the old band and timer, and the next tu
   expect(await band($)).toBe('')
   clock.now = T0 + 55 * MINUTE
   expect(world.forks).toBe(0)
-  expect(world.toasts).toEqual([])
+  expect(world.logged).toEqual([])
 
   await $.turn.complete(turnEnd)
   expect(await band($)).toBe(`embers  warm  handoff at ${hhmm(T0 + 110 * MINUTE)}`)
@@ -486,7 +538,9 @@ test('Fresh at a cold prompt clears the session with no fork and no handoff row'
   expect(world.commands).toEqual(['clear'])
   expect(world.forks).toBe(0)
   expect(session.appended()).toEqual([])
-  expect(world.toasts).toEqual(['embers: started a fresh session; send your prompt from the box'])
+  expect(world.logged).toEqual([
+    `embers: started a fresh session; send your prompt from the box. Old conversation: claude --resume ${SESSION}`,
+  ])
   expect(await $.prompt.submit({ text: 'go on', ...typed })).toEqual({ text: 'go on' })
   expect(world.asks).toHaveLength(1)
 })
@@ -503,7 +557,7 @@ test('a handoff whose turn count no longer matches is not swapped to', async ($,
   const entered = await $.prompt.submit({ text: 'go on', ...typed })
 
   expect(entered).toEqual({ text: 'go on' })
-  expect(world.asks.map(ask => ask.labels)).toEqual([['Send as is', 'Fresh session']])
+  expect(world.asks.map(ask => ask.labels)).toEqual([['Send as is (100k)', 'Fresh session (~20k)']])
   expect(world.compactions).toEqual([])
   expect(world.forks).toBe(0)
 })
@@ -556,7 +610,7 @@ test('a timer that fires after the cache lapsed (slept laptop) forks nothing', a
 
   expect(world.forks).toBe(0)
   expect([...store.keys()]).toEqual([])
-  expect(world.toasts.some(text => text.includes('handoff skipped'))).toBe(true)
+  expect(world.logged.some(text => text.includes('handoff skipped'))).toBe(true)
   expect(await band($)).toBe('')
 })
 
@@ -583,7 +637,7 @@ test('a model change while idle forks nothing and stores no TTL from the cold re
   world.model = 'claude-other'
   await clock.advance(55 * MINUTE)
   expect(world.forks).toBe(0)
-  expect(world.toasts).toEqual(['embers: handoff skipped, the model changed since the last turn'])
+  expect(world.logged).toEqual(['embers: handoff skipped, the model changed since the last turn'])
 
   // Sent before any timer: the first request on the new model reads cold
   // after 10m, well inside the TTL. Taken for a lapse, it would make one
@@ -872,4 +926,214 @@ test('store retention drops bad and expired records, and keeps superseded ones w
   await $.session.start({ ...start, isInteractive: false })
 
   expect([...store.keys()].sort()).toEqual([old, newer, other, terminalA, terminalB].sort())
+})
+
+test('a swap refused after the /clear says so and names the old session', async ($, on) => {
+  const world = engine(on, { answer: 'Swap to handoff', contextTokens: undefined })
+  const clock = mock.clock(on, { now: T0 + 120 * MINUTE })
+  memoryStore(on, { [KEY]: handoff({}) })
+  on('session.append', () => ({ deny: 'too large' }))
+
+  await $.session.start(start)
+  await $.prompt.submit({ text: 'go on', ...typed })
+  await clock.settle()
+
+  expect(world.commands).toEqual(['clear'])
+  expect(world.logged).toHaveLength(1)
+  expect(world.logged[0]).toContain('the handoff was refused (too large)')
+  expect(world.logged[0]).toContain(`claude --resume ${SESSION}`)
+})
+
+test('a /clear that fails changes nothing, and the next prompt is still asked about', async ($, on) => {
+  const world = engine(on, { answer: 'Swap to handoff', contextTokens: undefined, failing: 'clear' })
+  const clock = mock.clock(on, { now: T0 + 120 * MINUTE })
+  memoryStore(on, { [KEY]: handoff({}) })
+
+  await $.session.start(start)
+  await $.prompt.submit({ text: 'go on', ...typed })
+  await clock.settle()
+  expect(world.logged.at(-1)).toContain('could not be cleared')
+
+  world.failing = undefined
+  await $.prompt.submit({ text: 'go on', ...typed })
+  expect(world.asks).toHaveLength(2)
+})
+
+test('a turn that ended on an API error does not count as a cache read', async ($, on) => {
+  const world = engine(on)
+  const clock = mock.clock(on, { now: T0 })
+  memoryStore(on)
+
+  await $.session.start(start)
+  await $.turn.complete(turnEnd)
+  await clock.set(T0 + 30 * MINUTE)
+  await $.prompt.submit({ text: 'go on', ...typed })
+  const { usage: _, ...noUsage } = turnEnd
+  await $.turn.complete({ ...noUsage, reason: 'error' })
+  expect(await band($)).toBe('')
+
+  // 65 minutes after the last read, 35 after the error: cold.
+  await clock.set(T0 + 65 * MINUTE)
+  await $.prompt.submit({ text: 'go on', ...typed })
+  expect(world.asks).toHaveLength(1)
+  expect(world.forks).toBe(0)
+})
+
+test("/embers show draws this session's handoff for the person and sends the model nothing", async ($, on) => {
+  const world = engine(on)
+  mock.clock(on, { now: T0 })
+  memoryStore(on, { [KEY]: handoff({ text: '## Goal\n\nship v2' }) })
+
+  await $.session.start(start)
+  const shown = await $.command.run(slash('embers', 'show'))
+
+  expect(shown.text).toBeUndefined()
+  expect(await placedText($, world)).toContain('## Goal\n\nship v2')
+})
+
+test('a cold ask answered with free text or dismissed sends nothing and changes nothing', async ($, on) => {
+  const world = engine(on, { answer: 'hmm, wait', contextTokens: undefined })
+  const clock = mock.clock(on, { now: T0 + 120 * MINUTE })
+  memoryStore(on, { [KEY]: handoff({}) })
+
+  await $.session.start(start)
+  const dropped = await $.prompt.submit({ text: 'go on', ...typed })
+  await clock.settle()
+
+  expect(dropped).toEqual({ drop: 'embers: nothing sent; your prompt is back in the box' })
+  expect(world.commands).toEqual([])
+  // Still cold: the prompt sent again is asked about again.
+  await $.prompt.submit({ text: 'go on', ...typed })
+  expect(world.asks).toHaveLength(2)
+})
+
+test('Read it first shows the handoff, keeps the session, and asks again on the next prompt', async ($, on) => {
+  const world = engine(on, { answer: 'Read it first', contextTokens: undefined })
+  const clock = mock.clock(on, { now: T0 + 120 * MINUTE })
+  const store = memoryStore(on, { [KEY]: handoff({ text: '## Goal\n\nship v2' }) })
+
+  await $.session.start(start)
+  const dropped = await $.prompt.submit({ text: 'go on', ...typed })
+  await clock.settle()
+
+  expect(dropped.drop).toContain('the handoff is above')
+  expect(await placedText($, world)).toContain('## Goal\n\nship v2')
+  expect(world.commands).toEqual([])
+  expect(store.has(KEY)).toBe(true)
+  world.answer = 'Swap to handoff'
+  await $.prompt.submit({ text: 'go on', ...typed })
+  await clock.settle()
+  expect(world.commands).toEqual(['clear'])
+})
+
+test('an observed TTL expires after a day; one Claude Code reported does not', async ($, on) => {
+  engine(on)
+  mock.clock(on, { now: T0 })
+  const store = memoryStore(on, {
+    'ttl:claude-test': { v: 1, observedMinutes: 5, observedAt: T0 - 2 * 24 * 60 * MINUTE },
+  })
+
+  await $.session.start(start)
+  await $.turn.complete(turnEnd)
+  expect(await band($)).toBe(`embers  warm  handoff at ${hhmm(T0 + 55 * MINUTE)}`)
+  expect(store.has('ttl:claude-test')).toBe(false)
+
+  store.set('ttl:claude-test', { v: 1, observedMinutes: 5, observedAt: T0 - 2 * 24 * 60 * MINUTE, source: 'reported' })
+  await $.turn.complete(turnEnd)
+  expect(await band($)).toBe(`embers  warm  handoff at ${hhmm(T0 + 4 * MINUTE)}`)
+})
+
+test("Load it brings in an earlier session's handoff as such, and leaves it for that session", async ($, on) => {
+  const world = engine(on, { answer: 'Load it', turns: 0 })
+  const clock = mock.clock(on, { now: T0 })
+  const oldKey = `handoff:${ROOT}:old`
+  const store = memoryStore(on, {
+    [oldKey]: handoff({ sessionId: 'old', writtenAt: T0 - 120 * MINUTE, text: 'ship v2' }),
+  })
+  const session = mock.session(on)
+
+  await $.session.start(start)
+  await clock.settle()
+
+  const row = JSON.stringify(session.appended()[0]?.message.content)
+  expect(row).toContain('A handoff from an earlier session')
+  expect(row).not.toContain('This conversation was replaced')
+  expect(await placedText($, world)).toContain('ship v2')
+  // Session "old" may still be open: its handoff stays, marked so it is not offered again.
+  expect(store.get(oldKey)).toMatchObject({ sessionId: 'old', offeredAt: T0 })
+})
+
+test('/embers status tallies what handoffs cost and what swaps saved this month', async ($, on) => {
+  engine(on, { answer: 'Swap to handoff' })
+  const clock = mock.clock(on, { now: T0 })
+  memoryStore(on)
+
+  await $.session.start(start)
+  await $.turn.complete(turnEnd)
+  await clock.advance(55 * MINUTE)
+  await clock.set(T0 + 120 * MINUTE)
+  await $.prompt.submit({ text: 'go on', ...typed })
+  await clock.settle()
+
+  const status = await $.command.run(slash('embers', 'status'))
+  // The fork read 99k from cache, 300 uncached, 1.2k out: 9.9k + 300 + 6k = 16.2k.
+  expect(status.text).toContain('This month: 1 handoff cost ~16k; 1 swap saved ~')
+  expect(status.text).toMatch(/Net saved ~\d+k/)
+})
+
+test('a /clear another hook answered without running it is not taken for a swap', async ($, on) => {
+  const world = engine(on, { answer: 'Swap to handoff', contextTokens: undefined, failing: 'intercepted-clear' })
+  const clock = mock.clock(on, { now: T0 + 120 * MINUTE })
+  const store = memoryStore(on, { [KEY]: handoff({}) })
+  const session = mock.session(on)
+
+  await $.session.start(start)
+  await $.prompt.submit({ text: 'go on', ...typed })
+  await clock.settle()
+
+  expect(session.appended()).toEqual([])
+  expect(store.has(KEY)).toBe(true)
+  expect(world.logged.at(-1)).toContain('could not be cleared')
+  await $.prompt.submit({ text: 'go on', ...typed })
+  expect(world.asks).toHaveLength(2)
+})
+
+test('Read it first with nowhere to draw the handoff still sends nothing', async ($, on) => {
+  const world = engine(on, { answer: 'Read it first', contextTokens: undefined, isPlaceable: false })
+  mock.clock(on, { now: T0 + 120 * MINUTE })
+  memoryStore(on, { [KEY]: handoff({}) })
+
+  await $.session.start(start)
+  const dropped = await $.prompt.submit({ text: 'go on', ...typed })
+
+  expect(dropped.drop).toContain('could not be shown; nothing sent')
+  expect(world.commands).toEqual([])
+})
+
+test('a load the host refuses is reported, not counted or shown as loaded', async ($, on) => {
+  const world = engine(on, { answer: 'Load it', turns: 0 })
+  const clock = mock.clock(on, { now: T0 })
+  memoryStore(on, { [`handoff:${ROOT}:old`]: handoff({ sessionId: 'old', writtenAt: T0 - 120 * MINUTE }) })
+  on('session.append', () => ({ deny: 'too large' }))
+
+  await $.session.start(start)
+  await clock.settle()
+
+  expect(world.logged).toEqual(['embers: the handoff was not loaded (too large)'])
+  expect(world.placed).toEqual([])
+  expect((await $.command.run(slash('embers', 'status'))).text).toContain('This month: nothing yet.')
+})
+
+test('a tally the store refuses does not cost the handoff', async ($, on) => {
+  const world = engine(on)
+  const clock = mock.clock(on, { now: T0 })
+  const store = memoryStore(on, {}, key => key.startsWith('stats:'))
+
+  await $.session.start(start)
+  await $.turn.complete(turnEnd)
+  await clock.advance(55 * MINUTE)
+
+  expect(world.forks).toBe(1)
+  expect(store.has(KEY)).toBe(true)
+  expect(await band($)).toContain('embers  handoff ready')
 })
