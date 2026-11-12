@@ -34,6 +34,8 @@ type World = {
   turns: number
   /** `context.tokens`; absent before a resumed process's first response. */
   contextTokens: number | undefined
+  /** What the local breakdown estimates the conversation at while `context.tokens` is absent. */
+  estimatedTokens: number
   answer: string
   forks: number
   /** While set, a fork in flight waits for it. */
@@ -64,6 +66,7 @@ function engine(on: On, overrides: Partial<World> = {}): World {
     stepUsage: WARM,
     turns: 3,
     contextTokens: 100_000,
+    estimatedTokens: 100_000,
     answer: 'Send as is',
     forks: 0,
     forkGate: undefined,
@@ -104,14 +107,14 @@ function engine(on: On, overrides: Partial<World> = {}): World {
             { name: 'System tools', tokens: 12_000, color: 'x', isDeferred: false, kind: 'used' },
             {
               name: 'Messages',
-              tokens: (world.contextTokens ?? 20_000) - 20_000,
+              tokens: (world.contextTokens ?? world.estimatedTokens) - 20_000,
               color: 'x',
               isDeferred: false,
               kind: 'used',
             },
             { name: 'Free space', tokens: 80_000, color: 'x', isDeferred: false, kind: 'free' },
           ],
-          totalTokens: world.contextTokens ?? 20_000,
+          totalTokens: world.contextTokens ?? world.estimatedTokens,
           maxTokens: 200_000,
           rawMaxTokens: 200_000,
           autocompactSource: 'model-default',
@@ -464,6 +467,48 @@ test('a session resumed with no handoff on file still asks before sending its fi
 
   expect(world.asks).toHaveLength(1)
   expect(world.asks[0]?.question).toContain('Sending rewrites 100k tokens')
+})
+
+test('a resume judges the conversation as it is now, not the size stored before a compaction', async ($, on) => {
+  const world = engine(on)
+  const clock = mock.clock(on, { now: T0 })
+  memoryStore(on)
+  const startOver = stateStartsOver(on)
+
+  await $.session.start(start)
+  await $.turn.complete(turnEnd)
+  // Compacted to 10k, then the process quit with no turn after it.
+  startOver()
+  world.contextTokens = undefined
+  world.estimatedTokens = 10_000
+  await clock.set(T0 + 11 * 60 * MINUTE)
+  await $.session.start(start)
+
+  expect(await $.prompt.submit({ text: 'continue', ...typed })).toEqual({ text: 'continue' })
+  expect(world.asks).toEqual([])
+})
+
+test('a -p turn on a resumed session keeps the cache warm for the next interactive resume', async ($, on) => {
+  const world = engine(on)
+  const clock = mock.clock(on, { now: T0 })
+  memoryStore(on)
+  const startOver = stateStartsOver(on)
+
+  await $.session.start(start)
+  await $.turn.complete(turnEnd)
+  startOver()
+  world.surfaces = []
+  await clock.set(T0 + 11 * 60 * MINUTE)
+  await $.session.start({ ...start, surface: null, isInteractive: false })
+  await $.turn.complete(turnEnd)
+  startOver()
+  world.surfaces = ['terminal']
+  world.contextTokens = undefined
+  await clock.set(T0 + 11 * 60 * MINUTE + 5 * MINUTE)
+  await $.session.start(start)
+
+  expect(await $.prompt.submit({ text: 'continue', ...typed })).toEqual({ text: 'continue' })
+  expect(world.asks).toEqual([])
 })
 
 test('a /clear typed by the person drops the old band and timer, and the next turn arms again', async ($, on) => {

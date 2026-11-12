@@ -130,8 +130,9 @@ export const register: Register = (on, options) => {
       deadline: isArmed ? now + ttl - margin : undefined,
     })
     if (s.phase.kind === 'armed') arm($, config, now, s.phase.deadline)
-    // Kept past the process: a resume with no handoff on file still knows the cache went cold.
-    if (isInteractive && tokens !== undefined && tokens >= config.minContextTokens) {
+    // Kept past the process: a resume with no handoff on file still knows the
+    // cache went cold. Every turn that read it counts, a small or -p one too.
+    if (tokens !== undefined) {
       await writeTouch($, { sessionId, touchedAt: now, contextTokens: tokens })
     }
     return next(e)

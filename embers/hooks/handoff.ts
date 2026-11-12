@@ -237,8 +237,7 @@ export async function seedTouch($: EngineInterface, ttl: number): Promise<void> 
 
 /**
  * The cold-prompt path; undefined sends the prompt as it is. `knownTokens`
- * stands in for `context.tokens`, absent before a resumed process's first
- * response.
+ * stands in for `context.tokens` when neither it nor the breakdown is there.
  */
 export async function coldPrompt(
   $: EngineInterface,
@@ -257,7 +256,10 @@ export async function coldPrompt(
     $.ui.log(`cold prompt after ${minutesOf(idleMs)}m idle sent unasked: ${why}`, { to: 'debug' })
     return undefined
   }
-  const tokens = usage.context.tokens ?? knownTokens
+  // Before a resumed process's first response the estimate stands in: it
+  // measures the conversation as it is now, after a compaction or a rewind
+  // the stored size no longer saw.
+  const tokens = usage.context.tokens ?? usage.context.breakdown?.totalTokens ?? knownTokens
   const estimated = fixedTokens(usage.context.breakdown)
   if (tokens === undefined) return sendAsIs('no context size')
   if (tokens < config.minContextTokens) return sendAsIs(`${k(tokens)} tokens, under minContextTokens`)

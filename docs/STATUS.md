@@ -8,7 +8,7 @@ embers 0.2.0 is on `main`, tagged `embers--v0.2.0`, and listed in the `ayagmar/c
 
 ## In flight
 
-Branch `fix/cold-pass-through`, PR open, not released. A resumed session whose handoff was never written (fork failed over a usage limit, or the process quit before the timer) sent its first prompt cold without asking: 328k tokens on a runnerd session on 2026-11-12. Fixes: a `touch:<session>` record per session seeds the cache on resume; every unasked cold send logs its reason to the debug log; log lines lose their doubled `embers:` prefix (the host adds one); a fork that failed before billing is no longer tallied. 41 tests; `npm run check` clean.
+Branch `fix/cold-pass-through`, PR open, not released. A resumed session whose handoff was never written (fork failed over a usage limit, or the process quit before the timer) sent its first prompt cold without asking: 328k tokens on a runnerd session on 2026-11-12. Fixes: a `touch:<session>` record per session seeds the cache on resume; every unasked cold send logs its reason to the debug log; log lines lose their doubled `embers:` prefix (the host adds one); a fork that failed before billing is no longer tallied. Review round 1 fixes: the touch is written on every turn with a context size, the resumed size comes from the local breakdown, debug lines lose the prefix too, and the prefix check fails tests even on paths that catch their own errors. 43 tests; `npm run check` clean.
 
 ## Next
 
