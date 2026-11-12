@@ -17,6 +17,7 @@ Two things make it worse:
 
 2. **Cold prompt.** On a person's `prompt.submit` on the main loop, embers compares the time since the last cache touch (the last main-loop turn end, or a later fork that read the cache) with the TTL.
    - Under the TTL: the prompt passes through. Nothing drawn, nothing logged.
+   - Over the TTL but sent without asking (no cache touch known, a context under `minContextTokens`, no breakdown, too small a saving, or no one to ask under `-p`): the prompt passes through and the debug log names the reason.
    - Over the TTL: embers asks, inside the hook with `$.ui.ask`. The choices:
      - **swap** (first, offered only when a handoff is on file and matches the session id and turn count): the hook drops the prompt; from `$.clock.after(0, …)` embers runs `/clear`, appends the handoff and the last reply as the new conversation's first row with `$.session.append`, and deletes the handoff. The person sends the prompt again from the box, and it enters on the short prefix. No model call.
      - **send**: `next(e)` with the prompt intact; it enters cold and the cache rewarms on that request.
@@ -108,7 +109,7 @@ flowchart LR
 ```
 
 - `$.state` holds the phase above, the last cache touch, and what embers learned about the TTL. It survives a reload.
-- `$.store` holds handoffs (`handoff:<folder>:<session>`), handoffs already offered at start (`offered:<session>:<time>`), learned TTLs per model (`ttl:<model>`) and the monthly tally (`stats:<yyyy-mm>`). Handoffs older than 14 days are dropped.
+- `$.store` holds handoffs (`handoff:<folder>:<session>`), handoffs already offered at start (`offered:<session>:<time>`), each session's last cache touch (`touch:<session>`), learned TTLs per model (`ttl:<model>`) and the monthly tally (`stats:<yyyy-mm>`). Handoffs and touches older than 14 days are dropped.
 - The TTL starts at `ttlMinutes`. If the first reply after an idle shorter than that comes back cold twice, embers stores the shorter TTL for that model for a day.
 
 ## Rules that keep it cheap
@@ -154,14 +155,15 @@ The effort level is not kept: no API reads it while idle. `/effort` disarms the 
 
 - `handoff:<root>:<sessionId>`: `{ v: 1, root, branch, sessionId, turns, writtenAt, contextTokens, text, lastAssistant, offeredAt? }`. `offeredAt` was written by 0.1.0's start offer; it is still read, so a handoff 0.1.0 offered is not offered again, and never written. `lastAssistant` is the last assistant message's text, taken from `$.session.messages()` before the fork, because the fork's view ends at the last request and never sees the final reply. The swap appends it after the handoff.
 - `offered:<sessionId>:<writtenAt>`: `{ v: 1, sessionId, writtenAt }`, the start offer showed that handoff. Writing it is best effort: a refused write costs a repeat offer, not the Load. A newer handoff of the same session has another `writtenAt` and is offered again. embers 0.1.0's retention deletes these keys, so with both versions running a handoff can be offered twice.
+- `touch:<sessionId>`: `{ v: 1, sessionId, touchedAt, contextTokens }`, when the session last read the cache. Written at each interactive turn end at or over `minContextTokens`, and after a warm fork. Writing it is best effort: a refused write costs the cold ask after a resume.
 - `ttl:<model>`: `{ v: 1, observedMinutes, observedAt, source? }`.
 - `stats:<yyyy-mm>` (local time): `{ v: 1, forks, forkCost, swaps, swapSaved, loads }`, in input-token equivalents at a cache read 0.1, a cache write 1.25 and output 5. A fork the API billed adds its cost (an `api-error` before any request billed adds nothing); a swap adds 1.25 × (context tokens − the new prefix). `$.store` has no update, so two sessions adding at once can lose one addition.
 
-Retention: a handoff is deleted when swapped to, loaded, or overtaken by a later main-loop turn of its own session. While a root holds more than 10 handoffs, the oldest that are not the newest of their branch and are older than twice the TTL are dropped until it holds 10. A younger one may belong to a session still open in the same checkout, and an older one to a session resumed later. Handoffs and offer marks whose handoff was written more than 14 days ago are dropped. Both run on session start and after each handoff is written. Every read validates `v` and shape; a record that fails is treated as absent and deleted.
+Retention: a handoff is deleted when swapped to, loaded, or overtaken by a later main-loop turn of its own session. While a root holds more than 10 handoffs, the oldest that are not the newest of their branch and are older than twice the TTL are dropped until it holds 10. A younger one may belong to a session still open in the same checkout, and an older one to a session resumed later. Handoffs and offer marks whose handoff was written more than 14 days ago, and touches older than 14 days, are dropped. Both run on session start and after each handoff is written. Every read validates `v` and shape; a record that fails is treated as absent and deleted.
 
 Session id, root and turns are captured before every await and bound to the record; `/clear` mid-fork must not store the old conversation under the new id. After the fork the phase is read through `update`: every `$.state.get` of one dispatch reads one moment (`d.ts:3558`), so a plain read after that wait can be stale.
 
-Resume: `session.start`, when no cache is known, reads the session's own handoff and, when its turn count still matches, seeds a cache touched at `writtenAt` with the record's `contextTokens`. A matching handoff is the only case where a swap is possible. `context.tokens` is absent until the first response of a resumed process, so the cold path falls back to the seeded `contextTokens`. Classic hooks are not used for this: an organization plugin can bypass a mod's `classic.*` hooks.
+Resume: `$.state` starts over in a new process, so `session.start`, when no cache is known, seeds one from the session's `touch:` record. A session 0.2.0 left has none; its own handoff, when its turn count still matches, seeds a cache touched at `writtenAt` instead. Without either, embers knows nothing about the cache, and the first prompt goes out unjudged (the debug log says so). A matching handoff is the only case where a swap is possible; with a touch and no handoff, the cold ask offers send or fresh. `context.tokens` is absent until the first response of a resumed process, so the cold path falls back to the seeded `contextTokens`. Classic hooks are not used for this: an organization plugin can bypass a mod's `classic.*` hooks.
 
 ## Configuration (`userConfig`)
 

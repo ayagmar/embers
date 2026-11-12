@@ -7,14 +7,14 @@ import {
   observeTtl,
   offerHandoff,
   outcome,
-  seedFromHandoff,
+  seedTouch,
   showHandoff,
   status,
   ttlMs,
   writeHandoff,
 } from './handoff'
 import { disarm, inProcess } from './process'
-import { handoffKey, marginFor, readHandoff, sweep, ttlKey } from './records'
+import { handoffKey, marginFor, readHandoff, sweep, ttlKey, writeTouch } from './records'
 import { bandLine, CANCEL, isPersonPrompt, k, MINUTE, readConfig, WRITE } from './shared'
 import {
   apply,
@@ -46,7 +46,7 @@ export const register: Register = (on, options) => {
     const s = await apply($, r => ttlInForce(forkFailed(r), { ttl, margin, model }))
     if (s.isOff) inProcess.isOff = true
     if (s.phase.kind === 'armed') arm($, config, now, s.phase.deadline)
-    if (s.phase.cache === undefined) await seedFromHandoff($, ttl)
+    if (s.phase.cache === undefined) await seedTouch($, ttl)
     await sweep($, now, ttl)
     // Once per session, never under -p, and not into a resumed conversation,
     // which already holds its own context.
@@ -67,7 +67,11 @@ export const register: Register = (on, options) => {
     disarm()
     const s = await apply($, promptStarted)
     const { cache } = s.phase
-    if (isOff(s) || config.coldMode === 'send' || cache === undefined) return next(e)
+    if (isOff(s) || config.coldMode === 'send') return next(e)
+    if (cache === undefined) {
+      $.ui.log('embers: prompt sent unjudged: no cache touch known', { to: 'debug' })
+      return next(e)
+    }
     const [now, ttl] = await Promise.all([$.clock.now(), ttlMs($, config)])
     const idle = now - cache.touchedAt
     if (idle < ttl) return next(e)
@@ -128,6 +132,10 @@ export const register: Register = (on, options) => {
       deadline: isArmed ? now + ttl - margin : undefined,
     })
     if (s.phase.kind === 'armed') arm($, config, now, s.phase.deadline)
+    // Kept past the process: a resume with no handoff on file still knows the cache went cold.
+    if (isInteractive && tokens !== undefined && tokens >= config.minContextTokens) {
+      await writeTouch($, { sessionId, touchedAt: now, contextTokens: tokens })
+    }
     return next(e)
   }).catch((_, e, next) => next(e))
 

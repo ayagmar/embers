@@ -1,6 +1,6 @@
 # Status
 
-Updated 2026-11-10.
+Updated 2026-11-12.
 
 ## State
 
@@ -8,7 +8,7 @@ embers 0.2.0 is on `main`, tagged `embers--v0.2.0`, and listed in the `ayagmar/c
 
 ## In flight
 
-Nothing.
+Branch `fix/cold-pass-through`, PR open, not released. A resumed session whose handoff was never written (fork failed over a usage limit, or the process quit before the timer) sent its first prompt cold without asking: 328k tokens on a runnerd session on 2026-11-12. Fixes: a `touch:<session>` record per session seeds the cache on resume; every unasked cold send logs its reason to the debug log; log lines lose their doubled `embers:` prefix (the host adds one); a fork that failed before billing is no longer tallied. 41 tests; `npm run check` clean.
 
 ## Next
 

@@ -46,7 +46,7 @@ embers  handoff ready  12:55, 118k tokens, warm until 13:55
 
 ### Coming back after a break
 
-If you send a message after the cache has expired, embers holds it and asks what to do. Each choice shows how many tokens it will cost:
+If you send a message after the cache has expired, embers holds it and asks what to do. This works after `claude --resume` too. Each choice shows how many tokens it will cost:
 
 - **Swap to handoff**: start a clean conversation from the summary. Your message stays in the box; send it again.
 - **Send as is**: send the message and pay to reload the full conversation.

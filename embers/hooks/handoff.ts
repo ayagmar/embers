@@ -11,11 +11,13 @@ import {
   markOffered,
   readHandoff,
   readStats,
+  readTouch,
   readTtl,
   sweep,
   ttlKey,
   ttlMinutes,
   wasOffered,
+  writeTouch,
 } from './records'
 import type { ColdChoice, Config } from './shared'
 import {
@@ -143,7 +145,9 @@ export async function writeHandoff($: EngineInterface, config: Config): Promise<
   const ttl = await ttlMs($, config)
   await $.store.set(handoffKey(root, sessionId), record)
   await sweep($, now, ttl)
-  await apply($, forkWritten, { now, ttl, isWarm: isWarmRead(reply.usage), contextTokens, usage: reply.usage })
+  const isWarm = isWarmRead(reply.usage)
+  await apply($, forkWritten, { now, ttl, isWarm, contextTokens, usage: reply.usage })
+  if (isWarm) await writeTouch($, { sessionId, touchedAt: now, contextTokens })
   return { kind: 'written', record, usage: reply.usage }
 }
 
@@ -214,12 +218,18 @@ async function swap($: EngineInterface, record: HandoffRecord, plan: Reshape, re
 }
 
 /**
- * A resumed process: the session's own handoff, still matching its turn
- * count, says when the cache was last read and how large the context was,
- * so the first prompt is judged and a swap is offered.
+ * A resumed process: the session's stored touch says when the cache was last
+ * read and how large the context was, so the first prompt is judged. A
+ * session 0.2.0 left has no touch; its own handoff, still matching its turn
+ * count, stands in for one.
  */
-export async function seedFromHandoff($: EngineInterface, ttl: number): Promise<void> {
+export async function seedTouch($: EngineInterface, ttl: number): Promise<void> {
   const [sessionId, root, turns] = await Promise.all([$.session.id(), $.session.root(), $.session.turns()])
+  const touch = await readTouch($, sessionId)
+  if (touch !== undefined) {
+    await apply($, cacheTouched, { touchedAt: touch.touchedAt, contextTokens: touch.contextTokens, ttl })
+    return
+  }
   const record = await readHandoff($, handoffKey(root, sessionId))
   if (record === undefined || record.turns !== turns) return
   await apply($, cacheTouched, { touchedAt: record.writtenAt, contextTokens: record.contextTokens, ttl })
@@ -242,16 +252,23 @@ export async function coldPrompt(
     $.session.turns(),
     $.session.usage({ breakdown: 'summary' }),
   ])
+  // Each way out sends the cold prompt unasked: the debug log says which.
+  const sendAsIs = (why: string): undefined => {
+    $.ui.log(`embers: cold prompt after ${minutesOf(idleMs)}m idle sent unasked: ${why}`, { to: 'debug' })
+    return undefined
+  }
   const tokens = usage.context.tokens ?? knownTokens
   const estimated = fixedTokens(usage.context.breakdown)
-  if (tokens === undefined || tokens < config.minContextTokens || estimated === undefined) return undefined
+  if (tokens === undefined) return sendAsIs('no context size')
+  if (tokens < config.minContextTokens) return sendAsIs(`${k(tokens)} tokens, under minContextTokens`)
+  if (estimated === undefined) return sendAsIs('no context breakdown')
   // A local estimate that can exceed the API's figure: Fresh never costs more than sending.
   const fixed = Math.min(estimated, tokens)
-  if (tokens - fixed < config.minSavingTokens) return undefined
+  if (tokens - fixed < config.minSavingTokens) return sendAsIs('a fresh start would save under minSavingTokens')
   const onFile = await readHandoff($, handoffKey(root, sessionId))
   const matching = onFile !== undefined && onFile.turns === turns ? onFile : undefined
   if (matching !== undefined && tokens - (fixed + handoffTokens(matching)) < config.minSavingTokens) {
-    return undefined
+    return sendAsIs('the swap would save under minSavingTokens')
   }
 
   // Writing a handoff now would reread the cold prefix and then throw that
@@ -274,7 +291,7 @@ export async function coldPrompt(
       .ask(question, { header: 'embers', options: options.map(([, label]) => label) })
       .catch(() => undefined)
     // No one to ask (-p): send, as the prompt would have gone without embers.
-    if (answer === undefined && (await $.session.surfaces()).length === 0) return undefined
+    if (answer === undefined && (await $.session.surfaces()).length === 0) return sendAsIs('no one to ask')
     choice = answer === undefined ? undefined : coldChoiceOf(answer, options)
   }
 

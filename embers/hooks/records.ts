@@ -1,6 +1,6 @@
 import type { EngineInterface } from 'claude-code'
 
-import type { HandoffRecord, OfferedRecord, StatsRecord, TtlRecord } from '../types'
+import type { HandoffRecord, OfferedRecord, StatsRecord, TouchRecord, TtlRecord } from '../types'
 
 const DAY = 86_400_000
 const RETAIN_MS = 14 * DAY
@@ -11,6 +11,7 @@ export const handoffKey = (root: string, sessionId: string): string => `handoff:
 export const offeredKey = (record: { sessionId: string; writtenAt: number }): string =>
   `offered:${record.sessionId}:${record.writtenAt}`
 export const ttlKey = (model: string): string => `ttl:${model}`
+export const touchKey = (sessionId: string): string => `touch:${sessionId}`
 const pad = (n: number): string => String(n).padStart(2, '0')
 export const statsKey = (now: number): string => {
   const at = new Date(now)
@@ -49,6 +50,20 @@ function parseOffered(key: string, value: unknown): OfferedRecord | undefined {
   return key === offeredKey(record) ? record : undefined
 }
 
+function parseTouch(key: string, value: unknown): TouchRecord | undefined {
+  if (!isObject(value) || value.v !== 1) return undefined
+  const { sessionId, touchedAt, contextTokens } = value
+  if (
+    typeof sessionId !== 'string' ||
+    typeof touchedAt !== 'number' ||
+    typeof contextTokens !== 'number' ||
+    key !== touchKey(sessionId)
+  ) {
+    return undefined
+  }
+  return { v: 1, sessionId, touchedAt, contextTokens }
+}
+
 function parseTtl(value: unknown): TtlRecord | undefined {
   if (!isObject(value) || value.v !== 1) return undefined
   const { observedMinutes, observedAt, source } = value
@@ -82,7 +97,7 @@ async function drop($: EngineInterface, key: string): Promise<boolean> {
 async function readRecord(
   $: EngineInterface,
   key: string,
-): Promise<HandoffRecord | OfferedRecord | TtlRecord | StatsRecord | undefined> {
+): Promise<HandoffRecord | OfferedRecord | TouchRecord | TtlRecord | StatsRecord | undefined> {
   const value = await $.store.get(key)
   if (value === undefined) return undefined
   const record = key.startsWith('handoff:')
@@ -93,7 +108,9 @@ async function readRecord(
         ? parseStats(value)
         : key.startsWith('offered:')
           ? parseOffered(key, value)
-          : undefined
+          : key.startsWith('touch:')
+            ? parseTouch(key, value)
+            : undefined
   if (record === undefined) await drop($, key)
   return record
 }
@@ -103,7 +120,20 @@ export async function readHandoff($: EngineInterface, key: string): Promise<Hand
   return record !== undefined && 'root' in record ? record : undefined
 }
 
-/** The TTL record in force at `now`: an observed one past a day reads as absent and is deleted. */
+export async function readTouch($: EngineInterface, sessionId: string): Promise<TouchRecord | undefined> {
+  const record = await readRecord($, touchKey(sessionId))
+  return record !== undefined && 'touchedAt' in record ? record : undefined
+}
+
+/** Best effort: a refused write costs the cold ask after a resume, not the turn or the handoff. */
+export async function writeTouch($: EngineInterface, touch: Omit<TouchRecord, 'v'>): Promise<void> {
+  try {
+    await $.store.set(touchKey(touch.sessionId), { v: 1, ...touch })
+  } catch (error) {
+    $.ui.log(`embers: the cache touch was not stored: ${String(error)}`, { to: 'debug' })
+  }
+}
+
 /** Whether the start offer already showed this handoff, here or in 0.1.0. */
 export async function wasOffered($: EngineInterface, record: HandoffRecord): Promise<boolean> {
   return record.offeredAt !== undefined || (await readRecord($, offeredKey(record))) !== undefined
@@ -119,6 +149,7 @@ export async function markOffered($: EngineInterface, record: HandoffRecord): Pr
   }
 }
 
+/** The TTL record in force at `now`: an observed one past a day reads as absent and is deleted. */
 export async function readTtl($: EngineInterface, key: string, now: number): Promise<TtlRecord | undefined> {
   const record = await readRecord($, key)
   if (record === undefined || !('observedMinutes' in record)) return undefined
@@ -166,7 +197,7 @@ export async function listHandoffs($: EngineInterface, root: string): Promise<Ha
 const ROOT_CAP = 10
 
 /**
- * Drops invalid records, handoffs and offer marks older than 14 days, and, while a root holds
+ * Drops invalid records, handoffs, offer marks and touches older than 14 days, and, while a root holds
  * more than `ROOT_CAP`, handoffs that are not the newest of their branch and
  * are older than twice the TTL. A younger one may belong to a session still
  * open in the same checkout, and an older one to a session resumed later.
@@ -176,8 +207,10 @@ export async function sweep($: EngineInterface, now: number, ttlMs: number): Pro
   const perRoot = new Map<string, number>()
   for (const key of await $.store.keys()) {
     const record = await readRecord($, key)
-    if (record === undefined || !('writtenAt' in record)) continue
-    if (now - record.writtenAt > RETAIN_MS) {
+    if (record === undefined) continue
+    const at = 'touchedAt' in record ? record.touchedAt : 'writtenAt' in record ? record.writtenAt : undefined
+    if (at === undefined) continue
+    if (now - at > RETAIN_MS) {
       await drop($, key)
       continue
     }

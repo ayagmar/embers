@@ -38,6 +38,8 @@ type World = {
   forks: number
   /** While set, a fork in flight waits for it. */
   forkGate: Promise<void> | undefined
+  /** Forks fail at their first request, as over a usage limit, and bill nothing. */
+  isForkRefused: boolean
   asks: { question: string; labels: string[] }[]
   compactions: SessionCompactInput[]
   /** Lines `$.ui.log` put in the transcript. */
@@ -65,6 +67,7 @@ function engine(on: On, overrides: Partial<World> = {}): World {
     answer: 'Send as is',
     forks: 0,
     forkGate: undefined,
+    isForkRefused: false,
     asks: [],
     compactions: [],
     logged: [],
@@ -131,6 +134,10 @@ function engine(on: On, overrides: Partial<World> = {}): World {
   on('model.fork', async () => {
     world.forks += 1
     await world.forkGate
+    if (world.isForkRefused) {
+      const usage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+      return { value: { isAnswered: false, reason: 'api-error', status: 429, error: 'rate_limit', usage } }
+    }
     return { value: { isAnswered: true, text: FORK_TEXT, usage: WARM } }
   })
   on('ui.log', (_, e) => {
@@ -430,6 +437,33 @@ test('a resumed session with its handoff on file is offered the swap before any 
   expect(session.appended()).toHaveLength(1)
 })
 
+test('a session resumed with no handoff on file still asks before sending its first prompt cold', async ($, on) => {
+  const world = engine(on, { isForkRefused: true })
+  const clock = manualClock(on, T0)
+  const store = memoryStore(on)
+  const startOver = stateStartsOver(on)
+
+  await $.session.start(start)
+  await $.turn.complete(turnEnd)
+  // The handoff timer fires over a usage limit: the fork fails and bills nothing.
+  clock.now = T0 + 55 * MINUTE
+  clock.waits.at(-1)?.fire()
+  await drain()
+  expect(world.logged).toEqual(['No handoff (api-error); read 0 from cache, wrote 0, 0 out'])
+  expect(store.has(KEY)).toBe(false)
+  expect(store.has('stats:2026-11')).toBe(false)
+
+  // Hours later the process is gone; the session is resumed in a new one.
+  startOver()
+  world.contextTokens = undefined
+  clock.now = T0 + 11 * 60 * MINUTE
+  await $.session.start(start)
+  await $.prompt.submit({ text: 'continue', ...typed })
+
+  expect(world.asks).toHaveLength(1)
+  expect(world.asks[0]?.question).toContain('Sending rewrites 100k tokens')
+})
+
 test('a /clear typed by the person drops the old band and timer, and the next turn arms again', async ($, on) => {
   const world = engine(on)
   const clock = manualClock(on, T0)
@@ -612,7 +646,7 @@ test('a timer that fires after the cache lapsed (slept laptop) forks nothing', a
   await drain()
 
   expect(world.forks).toBe(0)
-  expect([...store.keys()]).toEqual([])
+  expect([...store.keys()]).toEqual(['touch:session-1'])
   expect(world.logged.some(text => text.includes('handoff skipped'))).toBe(true)
   expect(await band($)).toBe('')
 })
