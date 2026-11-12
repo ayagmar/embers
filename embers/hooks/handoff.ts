@@ -114,10 +114,9 @@ export async function writeHandoff($: EngineInterface, config: Config): Promise<
 
   const reply = await $.model.fork({ prompt: handoffPrompt(config.handoffInstructions) })
   const now = await $.clock.now()
-  // Every fork that reached the API is paid for, answered or not.
-  if (reply.isAnswered || reply.reason !== 'nothing-to-fork') {
-    await addStats($, now, { forks: 1, forkCost: forkCost(reply.usage) })
-  }
+  // Every fork the API billed is paid for, answered or not; an api-error can bill nothing.
+  const cost = reply.isAnswered || reply.reason !== 'nothing-to-fork' ? forkCost(reply.usage) : 0
+  if (cost > 0) await addStats($, now, { forks: 1, forkCost: cost })
   if (!reply.isAnswered) {
     await apply($, forkFailed, reply.reason === 'nothing-to-fork' ? undefined : { at: now, usage: reply.usage })
     return reply.reason === 'nothing-to-fork'
