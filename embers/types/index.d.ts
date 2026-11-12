@@ -80,6 +80,19 @@ export type OfferedRecord = {
   writtenAt: number
 }
 
+/**
+ * `$.store` key `touch:<sessionId>`: when the session last read the cache, so
+ * a resumed process can judge its first prompt without a handoff on file.
+ * Written at each interactive turn end over `minContextTokens` and after a
+ * warm fork. A `/clear` gives a new session id, so it never speaks for the new conversation.
+ */
+export type TouchRecord = {
+  v: 1
+  sessionId: string
+  touchedAt: number
+  contextTokens: number
+}
+
 /** `$.store` key `ttl:<model>`. */
 export type TtlRecord = {
   v: 1

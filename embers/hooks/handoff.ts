@@ -11,11 +11,13 @@ import {
   markOffered,
   readHandoff,
   readStats,
+  readTouch,
   readTtl,
   sweep,
   ttlKey,
   ttlMinutes,
   wasOffered,
+  writeTouch,
 } from './records'
 import type { ColdChoice, Config } from './shared'
 import {
@@ -87,7 +89,7 @@ export function arm($: EngineInterface, config: Config, now: number, deadline: n
   disarm()
   inProcess.timer = $.clock.after(Math.max(0, deadline - now), () => {
     inProcess.timer = undefined
-    void fire($, config).catch(error => $.ui.log(`embers: handoff timer failed: ${String(error)}`, { to: 'debug' }))
+    void fire($, config).catch(error => $.ui.log(`handoff timer failed: ${String(error)}`, { to: 'debug' }))
   })
 }
 
@@ -114,10 +116,9 @@ export async function writeHandoff($: EngineInterface, config: Config): Promise<
 
   const reply = await $.model.fork({ prompt: handoffPrompt(config.handoffInstructions) })
   const now = await $.clock.now()
-  // Every fork that reached the API is paid for, answered or not.
-  if (reply.isAnswered || reply.reason !== 'nothing-to-fork') {
-    await addStats($, now, { forks: 1, forkCost: forkCost(reply.usage) })
-  }
+  // Every fork the API billed is paid for, answered or not; an api-error can bill nothing.
+  const cost = reply.isAnswered || reply.reason !== 'nothing-to-fork' ? forkCost(reply.usage) : 0
+  if (cost > 0) await addStats($, now, { forks: 1, forkCost: cost })
   if (!reply.isAnswered) {
     await apply($, forkFailed, reply.reason === 'nothing-to-fork' ? undefined : { at: now, usage: reply.usage })
     return reply.reason === 'nothing-to-fork'
@@ -144,7 +145,9 @@ export async function writeHandoff($: EngineInterface, config: Config): Promise<
   const ttl = await ttlMs($, config)
   await $.store.set(handoffKey(root, sessionId), record)
   await sweep($, now, ttl)
-  await apply($, forkWritten, { now, ttl, isWarm: isWarmRead(reply.usage), contextTokens, usage: reply.usage })
+  const isWarm = isWarmRead(reply.usage)
+  await apply($, forkWritten, { now, ttl, isWarm, contextTokens, usage: reply.usage })
+  if (isWarm) await writeTouch($, { sessionId, touchedAt: now, contextTokens })
   return { kind: 'written', record, usage: reply.usage }
 }
 
@@ -155,16 +158,16 @@ async function fire($: EngineInterface, config: Config): Promise<void> {
   if (cache.model !== model) {
     // The prefix is billed afresh after `/model`: a fork now pays for all of it.
     await apply($, forkSkipped)
-    $.ui.log('embers: handoff skipped, the model changed since the last turn')
+    $.ui.log('handoff skipped, the model changed since the last turn')
     return
   }
   if (now - cache.touchedAt >= ttl - SLACK_MS) {
     await apply($, forkSkipped)
-    $.ui.log(`embers: handoff skipped, the cache had already lapsed after ${minutesOf(now - cache.touchedAt)}m idle`)
+    $.ui.log(`handoff skipped, the cache had already lapsed after ${minutesOf(now - cache.touchedAt)}m idle`)
     return
   }
   // A log line, not a toast: the timer fires when nobody is looking.
-  $.ui.log(`embers: ${outcome(await writeHandoff($, config))}`)
+  $.ui.log(`${outcome(await writeHandoff($, config))}`)
 }
 
 /**
@@ -195,12 +198,12 @@ async function swap($: EngineInterface, record: HandoffRecord, plan: Reshape, re
     message: { type: 'user', content: [{ type: 'text', text: compose(record, 'swap') }] },
   })
   if (appended.deny !== undefined) {
-    $.ui.log(`embers: the session was cleared but the handoff was refused (${appended.deny}). ${resume}`)
+    $.ui.log(`the session was cleared but the handoff was refused (${appended.deny}). ${resume}`)
     return
   }
   // The handoff is in: what follows is feedback and bookkeeping, and its
   // failures must not read as a failed swap.
-  const debug = (error: unknown): void => $.ui.log(`embers: after the swap: ${String(error)}`, { to: 'debug' })
+  const debug = (error: unknown): void => $.ui.log(`after the swap: ${String(error)}`, { to: 'debug' })
   await $.store.delete(handoffKey(record.root, record.sessionId)).catch(debug)
   inProcess.lastShown = record
   await showHandoff($, record).catch(debug)
@@ -210,17 +213,23 @@ async function swap($: EngineInterface, record: HandoffRecord, plan: Reshape, re
     .then(now => addStats($, now, { swaps: 1, swapSaved: swapSaving(plan.tokens, after) }))
     .catch(debug)
   $.ui.log(
-    `embers: swapped to the ${clockTime(record.writtenAt)} handoff, ${k(plan.tokens)} → ~${k(after)} tokens; send your prompt from the box. ${resume}`,
+    `swapped to the ${clockTime(record.writtenAt)} handoff, ${k(plan.tokens)} → ~${k(after)} tokens; send your prompt from the box. ${resume}`,
   )
 }
 
 /**
- * A resumed process: the session's own handoff, still matching its turn
- * count, says when the cache was last read and how large the context was,
- * so the first prompt is judged and a swap is offered.
+ * A resumed process: the session's stored touch says when the cache was last
+ * read and how large the context was, so the first prompt is judged. A
+ * session 0.2.0 left has no touch; its own handoff, still matching its turn
+ * count, stands in for one.
  */
-export async function seedFromHandoff($: EngineInterface, ttl: number): Promise<void> {
+export async function seedTouch($: EngineInterface, ttl: number): Promise<void> {
   const [sessionId, root, turns] = await Promise.all([$.session.id(), $.session.root(), $.session.turns()])
+  const touch = await readTouch($, sessionId)
+  if (touch !== undefined) {
+    await apply($, cacheTouched, { touchedAt: touch.touchedAt, contextTokens: touch.contextTokens, ttl })
+    return
+  }
   const record = await readHandoff($, handoffKey(root, sessionId))
   if (record === undefined || record.turns !== turns) return
   await apply($, cacheTouched, { touchedAt: record.writtenAt, contextTokens: record.contextTokens, ttl })
@@ -228,8 +237,7 @@ export async function seedFromHandoff($: EngineInterface, ttl: number): Promise<
 
 /**
  * The cold-prompt path; undefined sends the prompt as it is. `knownTokens`
- * stands in for `context.tokens`, absent before a resumed process's first
- * response.
+ * stands in for `context.tokens` when neither it nor the breakdown is there.
  */
 export async function coldPrompt(
   $: EngineInterface,
@@ -243,16 +251,26 @@ export async function coldPrompt(
     $.session.turns(),
     $.session.usage({ breakdown: 'summary' }),
   ])
-  const tokens = usage.context.tokens ?? knownTokens
+  // Each way out sends the cold prompt unasked: the debug log says which.
+  const sendAsIs = (why: string): undefined => {
+    $.ui.log(`cold prompt after ${minutesOf(idleMs)}m idle sent unasked: ${why}`, { to: 'debug' })
+    return undefined
+  }
+  // Before a resumed process's first response the estimate stands in: it
+  // measures the conversation as it is now, after a compaction or a rewind
+  // the stored size no longer saw.
+  const tokens = usage.context.tokens ?? usage.context.breakdown?.totalTokens ?? knownTokens
   const estimated = fixedTokens(usage.context.breakdown)
-  if (tokens === undefined || tokens < config.minContextTokens || estimated === undefined) return undefined
+  if (tokens === undefined) return sendAsIs('no context size')
+  if (tokens < config.minContextTokens) return sendAsIs(`${k(tokens)} tokens, under minContextTokens`)
+  if (estimated === undefined) return sendAsIs('no context breakdown')
   // A local estimate that can exceed the API's figure: Fresh never costs more than sending.
   const fixed = Math.min(estimated, tokens)
-  if (tokens - fixed < config.minSavingTokens) return undefined
+  if (tokens - fixed < config.minSavingTokens) return sendAsIs('a fresh start would save under minSavingTokens')
   const onFile = await readHandoff($, handoffKey(root, sessionId))
   const matching = onFile !== undefined && onFile.turns === turns ? onFile : undefined
   if (matching !== undefined && tokens - (fixed + handoffTokens(matching)) < config.minSavingTokens) {
-    return undefined
+    return sendAsIs('the swap would save under minSavingTokens')
   }
 
   // Writing a handoff now would reread the cold prefix and then throw that
@@ -275,7 +293,7 @@ export async function coldPrompt(
       .ask(question, { header: 'embers', options: options.map(([, label]) => label) })
       .catch(() => undefined)
     // No one to ask (-p): send, as the prompt would have gone without embers.
-    if (answer === undefined && (await $.session.surfaces()).length === 0) return undefined
+    if (answer === undefined && (await $.session.surfaces()).length === 0) return sendAsIs('no one to ask')
     choice = answer === undefined ? undefined : coldChoiceOf(answer, options)
   }
 
@@ -297,7 +315,7 @@ export async function coldPrompt(
   const plan = { swapTo: choice === 'swap' ? matching : undefined, tokens, fixed }
   inProcess.isReshaping = true
   $.clock.after(0, () => {
-    void reshape($, plan).catch(error => $.ui.log(`embers: ${choice} failed: ${String(error)}`, { to: 'debug' }))
+    void reshape($, plan).catch(error => $.ui.log(`${choice} failed: ${String(error)}`, { to: 'debug' }))
   })
   const what = choice === 'fresh' ? 'starting fresh' : 'swapping to the handoff'
   return { drop: `embers: ${what}; your prompt stays in the box (paste attachments again)` }
@@ -321,22 +339,22 @@ async function reshape($: EngineInterface, plan: Reshape): Promise<void> {
     // A hook can answer `/clear` without running it: only a new session id proves the clear.
     const newId = await $.session.id().catch(() => undefined)
     if (newId === undefined) {
-      $.ui.log(`embers: /clear ran but its result could not be checked; the handoff was not added. ${resume}`)
+      $.ui.log(`/clear ran but its result could not be checked; the handoff was not added. ${resume}`)
       return
     }
     if (newId === oldId) throw new Error('/clear left the conversation in place')
     isCleared = true
     await afterClear($)
     if (plan.swapTo === undefined) {
-      $.ui.log(`embers: started a fresh session; send your prompt from the box. ${resume}`)
+      $.ui.log(`started a fresh session; send your prompt from the box. ${resume}`)
       return
     }
     await swap($, plan.swapTo, plan, resume)
   } catch (error) {
     $.ui.log(
       isCleared
-        ? `embers: the session was cleared but the handoff was not added (${String(error)}). ${resume}`
-        : `embers: the session could not be cleared (${String(error)}); nothing changed`,
+        ? `the session was cleared but the handoff was not added (${String(error)}). ${resume}`
+        : `the session could not be cleared (${String(error)}); nothing changed`,
     )
   } finally {
     inProcess.isReshaping = false
@@ -421,13 +439,13 @@ export async function offerHandoff($: EngineInterface, config: Config): Promise<
     .append({ message: { type: 'user', content: [{ type: 'text', text: compose(offer, 'load') }] } })
     .catch((error: unknown) => ({ deny: String(error) }))
   if (appended.deny !== undefined) {
-    $.ui.log(`embers: the handoff was not loaded (${appended.deny})`)
+    $.ui.log(`the handoff was not loaded (${appended.deny})`)
     return
   }
   await addStats($, now, { loads: 1 })
   inProcess.lastShown = offer
   await showHandoff($, offer).catch(() => false)
-  $.ui.log(`embers: loaded the ${clockTime(offer.writtenAt)} handoff (~${k(handoffTokens(offer))} tokens)`)
+  $.ui.log(`loaded the ${clockTime(offer.writtenAt)} handoff (~${k(handoffTokens(offer))} tokens)`)
 }
 
 export async function status($: EngineInterface, config: Config): Promise<string> {

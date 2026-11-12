@@ -34,10 +34,14 @@ type World = {
   turns: number
   /** `context.tokens`; absent before a resumed process's first response. */
   contextTokens: number | undefined
+  /** What the local breakdown estimates the conversation at while `context.tokens` is absent. */
+  estimatedTokens: number
   answer: string
   forks: number
   /** While set, a fork in flight waits for it. */
   forkGate: Promise<void> | undefined
+  /** Forks fail at their first request, as over a usage limit, and bill nothing. */
+  isForkRefused: boolean
   asks: { question: string; labels: string[] }[]
   compactions: SessionCompactInput[]
   /** Lines `$.ui.log` put in the transcript. */
@@ -62,9 +66,11 @@ function engine(on: On, overrides: Partial<World> = {}): World {
     stepUsage: WARM,
     turns: 3,
     contextTokens: 100_000,
+    estimatedTokens: 100_000,
     answer: 'Send as is',
     forks: 0,
     forkGate: undefined,
+    isForkRefused: false,
     asks: [],
     compactions: [],
     logged: [],
@@ -101,14 +107,14 @@ function engine(on: On, overrides: Partial<World> = {}): World {
             { name: 'System tools', tokens: 12_000, color: 'x', isDeferred: false, kind: 'used' },
             {
               name: 'Messages',
-              tokens: (world.contextTokens ?? 20_000) - 20_000,
+              tokens: (world.contextTokens ?? world.estimatedTokens) - 20_000,
               color: 'x',
               isDeferred: false,
               kind: 'used',
             },
             { name: 'Free space', tokens: 80_000, color: 'x', isDeferred: false, kind: 'free' },
           ],
-          totalTokens: world.contextTokens ?? 20_000,
+          totalTokens: world.contextTokens ?? world.estimatedTokens,
           maxTokens: 200_000,
           rawMaxTokens: 200_000,
           autocompactSource: 'model-default',
@@ -131,12 +137,20 @@ function engine(on: On, overrides: Partial<World> = {}): World {
   on('model.fork', async () => {
     world.forks += 1
     await world.forkGate
+    if (world.isForkRefused) {
+      const usage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+      return { value: { isAnswered: false, reason: 'api-error', status: 429, error: 'rate_limit', usage } }
+    }
     return { value: { isAnswered: true, text: FORK_TEXT, usage: WARM } }
   })
+  // Checks, not throws: the plugin catches a throw from its own log call, and
+  // a failed check in a hook fails the test wherever the call was made.
   on('ui.log', (_, e) => {
+    // The host heads each line, on screen and in the debug log, with the plugin's name.
+    expect(e.text.startsWith('embers:')).toBe(false)
     if (e.to !== 'transcript') return { value: undefined }
     // The terminal draws one line of 2000 characters: anything longer is mangled.
-    if (e.text.includes('\n') || e.text.length > 2000) throw new Error(`a log line the terminal mangles: ${e.text}`)
+    expect(e.text.includes('\n') || e.text.length > 2000).toBe(false)
     world.logged.push(e.text)
     return { value: undefined }
   })
@@ -428,6 +442,75 @@ test('a resumed session with its handoff on file is offered the swap before any 
   expect(session.appended()).toHaveLength(1)
 })
 
+test('a session resumed with no handoff on file still asks before sending its first prompt cold', async ($, on) => {
+  const world = engine(on, { isForkRefused: true })
+  const clock = manualClock(on, T0)
+  const store = memoryStore(on)
+  const startOver = stateStartsOver(on)
+
+  await $.session.start(start)
+  await $.turn.complete(turnEnd)
+  // The handoff timer fires over a usage limit: the fork fails and bills nothing.
+  clock.now = T0 + 55 * MINUTE
+  clock.waits.at(-1)?.fire()
+  await drain()
+  expect(world.logged).toEqual(['No handoff (api-error); read 0 from cache, wrote 0, 0 out'])
+  expect(store.has(KEY)).toBe(false)
+  expect(store.has('stats:2026-11')).toBe(false)
+
+  // Hours later the process is gone; the session is resumed in a new one.
+  startOver()
+  world.contextTokens = undefined
+  clock.now = T0 + 11 * 60 * MINUTE
+  await $.session.start(start)
+  await $.prompt.submit({ text: 'continue', ...typed })
+
+  expect(world.asks).toHaveLength(1)
+  expect(world.asks[0]?.question).toContain('Sending rewrites 100k tokens')
+})
+
+test('a resume judges the conversation as it is now, not the size stored before a compaction', async ($, on) => {
+  const world = engine(on)
+  const clock = mock.clock(on, { now: T0 })
+  memoryStore(on)
+  const startOver = stateStartsOver(on)
+
+  await $.session.start(start)
+  await $.turn.complete(turnEnd)
+  // Compacted to 10k, then the process quit with no turn after it.
+  startOver()
+  world.contextTokens = undefined
+  world.estimatedTokens = 10_000
+  await clock.set(T0 + 11 * 60 * MINUTE)
+  await $.session.start(start)
+
+  expect(await $.prompt.submit({ text: 'continue', ...typed })).toEqual({ text: 'continue' })
+  expect(world.asks).toEqual([])
+})
+
+test('a -p turn on a resumed session keeps the cache warm for the next interactive resume', async ($, on) => {
+  const world = engine(on)
+  const clock = mock.clock(on, { now: T0 })
+  memoryStore(on)
+  const startOver = stateStartsOver(on)
+
+  await $.session.start(start)
+  await $.turn.complete(turnEnd)
+  startOver()
+  world.surfaces = []
+  await clock.set(T0 + 11 * 60 * MINUTE)
+  await $.session.start({ ...start, surface: null, isInteractive: false })
+  await $.turn.complete(turnEnd)
+  startOver()
+  world.surfaces = ['terminal']
+  world.contextTokens = undefined
+  await clock.set(T0 + 11 * 60 * MINUTE + 5 * MINUTE)
+  await $.session.start(start)
+
+  expect(await $.prompt.submit({ text: 'continue', ...typed })).toEqual({ text: 'continue' })
+  expect(world.asks).toEqual([])
+})
+
 test('a /clear typed by the person drops the old band and timer, and the next turn arms again', async ($, on) => {
   const world = engine(on)
   const clock = manualClock(on, T0)
@@ -540,7 +623,7 @@ test('Fresh at a cold prompt clears the session with no fork and no handoff row'
   expect(world.forks).toBe(0)
   expect(session.appended()).toEqual([])
   expect(world.logged).toEqual([
-    `embers: started a fresh session; send your prompt from the box. Old conversation: claude --resume ${SESSION}`,
+    `started a fresh session; send your prompt from the box. Old conversation: claude --resume ${SESSION}`,
   ])
   expect(await $.prompt.submit({ text: 'go on', ...typed })).toEqual({ text: 'go on' })
   expect(world.asks).toHaveLength(1)
@@ -610,7 +693,7 @@ test('a timer that fires after the cache lapsed (slept laptop) forks nothing', a
   await drain()
 
   expect(world.forks).toBe(0)
-  expect([...store.keys()]).toEqual([])
+  expect([...store.keys()]).toEqual(['touch:session-1'])
   expect(world.logged.some(text => text.includes('handoff skipped'))).toBe(true)
   expect(await band($)).toBe('')
 })
@@ -638,7 +721,7 @@ test('a model change while idle forks nothing and stores no TTL from the cold re
   world.model = 'claude-other'
   await clock.advance(55 * MINUTE)
   expect(world.forks).toBe(0)
-  expect(world.logged).toEqual(['embers: handoff skipped, the model changed since the last turn'])
+  expect(world.logged).toEqual(['handoff skipped, the model changed since the last turn'])
 
   // Sent before any timer: the first request on the new model reads cold
   // after 10m, well inside the TTL. Taken for a lapse, it would make one
@@ -1191,7 +1274,7 @@ test('a load the host refuses is reported, not counted or shown as loaded', asyn
   await $.session.start(start)
   await clock.settle()
 
-  expect(world.logged).toEqual(['embers: the handoff was not loaded (too large)'])
+  expect(world.logged).toEqual(['the handoff was not loaded (too large)'])
   expect(world.placed).toEqual([])
   expect((await $.command.run(slash('embers', 'status'))).text).toContain('This month: nothing yet.')
 })
