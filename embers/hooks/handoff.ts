@@ -89,7 +89,7 @@ export function arm($: EngineInterface, config: Config, now: number, deadline: n
   disarm()
   inProcess.timer = $.clock.after(Math.max(0, deadline - now), () => {
     inProcess.timer = undefined
-    void fire($, config).catch(error => $.ui.log(`embers: handoff timer failed: ${String(error)}`, { to: 'debug' }))
+    void fire($, config).catch(error => $.ui.log(`handoff timer failed: ${String(error)}`, { to: 'debug' }))
   })
 }
 
@@ -203,7 +203,7 @@ async function swap($: EngineInterface, record: HandoffRecord, plan: Reshape, re
   }
   // The handoff is in: what follows is feedback and bookkeeping, and its
   // failures must not read as a failed swap.
-  const debug = (error: unknown): void => $.ui.log(`embers: after the swap: ${String(error)}`, { to: 'debug' })
+  const debug = (error: unknown): void => $.ui.log(`after the swap: ${String(error)}`, { to: 'debug' })
   await $.store.delete(handoffKey(record.root, record.sessionId)).catch(debug)
   inProcess.lastShown = record
   await showHandoff($, record).catch(debug)
@@ -254,7 +254,7 @@ export async function coldPrompt(
   ])
   // Each way out sends the cold prompt unasked: the debug log says which.
   const sendAsIs = (why: string): undefined => {
-    $.ui.log(`embers: cold prompt after ${minutesOf(idleMs)}m idle sent unasked: ${why}`, { to: 'debug' })
+    $.ui.log(`cold prompt after ${minutesOf(idleMs)}m idle sent unasked: ${why}`, { to: 'debug' })
     return undefined
   }
   const tokens = usage.context.tokens ?? knownTokens
@@ -313,7 +313,7 @@ export async function coldPrompt(
   const plan = { swapTo: choice === 'swap' ? matching : undefined, tokens, fixed }
   inProcess.isReshaping = true
   $.clock.after(0, () => {
-    void reshape($, plan).catch(error => $.ui.log(`embers: ${choice} failed: ${String(error)}`, { to: 'debug' }))
+    void reshape($, plan).catch(error => $.ui.log(`${choice} failed: ${String(error)}`, { to: 'debug' }))
   })
   const what = choice === 'fresh' ? 'starting fresh' : 'swapping to the handoff'
   return { drop: `embers: ${what}; your prompt stays in the box (paste attachments again)` }

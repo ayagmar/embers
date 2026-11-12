@@ -140,12 +140,14 @@ function engine(on: On, overrides: Partial<World> = {}): World {
     }
     return { value: { isAnswered: true, text: FORK_TEXT, usage: WARM } }
   })
+  // Checks, not throws: the plugin catches a throw from its own log call, and
+  // a failed check in a hook fails the test wherever the call was made.
   on('ui.log', (_, e) => {
+    // The host heads each line, on screen and in the debug log, with the plugin's name.
+    expect(e.text.startsWith('embers:')).toBe(false)
     if (e.to !== 'transcript') return { value: undefined }
     // The terminal draws one line of 2000 characters: anything longer is mangled.
-    if (e.text.includes('\n') || e.text.length > 2000) throw new Error(`a log line the terminal mangles: ${e.text}`)
-    // The host heads each line with the plugin's name: one of its own reads "embers: embers: ...".
-    if (e.text.startsWith('embers:')) throw new Error(`a log line the host prefixes twice: ${e.text}`)
+    expect(e.text.includes('\n') || e.text.length > 2000).toBe(false)
     world.logged.push(e.text)
     return { value: undefined }
   })

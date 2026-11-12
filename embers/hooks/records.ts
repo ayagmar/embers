@@ -130,7 +130,7 @@ export async function writeTouch($: EngineInterface, touch: Omit<TouchRecord, 'v
   try {
     await $.store.set(touchKey(touch.sessionId), { v: 1, ...touch })
   } catch (error) {
-    $.ui.log(`embers: the cache touch was not stored: ${String(error)}`, { to: 'debug' })
+    $.ui.log(`the cache touch was not stored: ${String(error)}`, { to: 'debug' })
   }
 }
 
@@ -145,7 +145,7 @@ export async function markOffered($: EngineInterface, record: HandoffRecord): Pr
   try {
     await $.store.set(offeredKey(mark), mark)
   } catch (error) {
-    $.ui.log(`embers: the start offer was not marked shown: ${String(error)}`, { to: 'debug' })
+    $.ui.log(`the start offer was not marked shown: ${String(error)}`, { to: 'debug' })
   }
 }
 
@@ -177,7 +177,7 @@ export async function addStats($: EngineInterface, now: number, add: Partial<Omi
     for (const field of STATS_FIELDS) next[field] = stats[field] + (add[field] ?? 0)
     await $.store.set(statsKey(now), next)
   } catch (error) {
-    $.ui.log(`embers: the monthly tally was not updated: ${String(error)}`, { to: 'debug' })
+    $.ui.log(`the monthly tally was not updated: ${String(error)}`, { to: 'debug' })
   }
 }
 

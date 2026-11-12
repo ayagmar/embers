@@ -52,9 +52,7 @@ export const register: Register = (on, options) => {
     // which already holds its own context.
     if (config.offerOnStart && e.isInteractive && !s.startOffered && (await $.session.turns()) === 0) {
       $.clock.after(0, () => {
-        void offerHandoff($, config).catch(error =>
-          $.ui.log(`embers: start offer failed: ${String(error)}`, { to: 'debug' }),
-        )
+        void offerHandoff($, config).catch(error => $.ui.log(`start offer failed: ${String(error)}`, { to: 'debug' }))
       })
     }
     return next(e)
@@ -69,7 +67,7 @@ export const register: Register = (on, options) => {
     const { cache } = s.phase
     if (isOff(s) || config.coldMode === 'send') return next(e)
     if (cache === undefined) {
-      $.ui.log('embers: prompt sent unjudged: no cache touch known', { to: 'debug' })
+      $.ui.log('prompt sent unjudged: no cache touch known', { to: 'debug' })
       return next(e)
     }
     const [now, ttl] = await Promise.all([$.clock.now(), ttlMs($, config)])
