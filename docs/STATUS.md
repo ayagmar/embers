@@ -4,11 +4,11 @@ Updated 2026-11-12.
 
 ## State
 
-embers 0.2.0 is on `main`, tagged `embers--v0.2.0`, and listed in the `ayagmar/claude-mods` marketplace. 0.2.0 adds, over 0.1.0: the handoff drawn as a placed Markdown row, `/embers show`, swap failures reported with the resume command, log lines instead of toasts, errored turns not counted as cache reads, Esc on the cold ask sends nothing, "Read it first" and sizes in the ask labels, observed TTLs that expire after a day and are reconciled on reload, a loaded handoff under its own header and kept for its session with the offer marked under its own key, Markdown handoffs under fixed headings, and a monthly tally in `/embers status`. 40 tests; `npm run check` clean. Not yet run for long with default settings.
+embers 0.2.1 is on `main`, tagged `embers--v0.2.1`, and listed in the `ayagmar/claude-mods` marketplace. 0.2.1 fixes, over 0.2.0: a resumed session with no handoff on file sent its first prompt cold without asking; it now keeps a `touch:<session>` record of its last cache read and sizes a resumed conversation from the local breakdown. Every unasked cold send logs its reason to the debug log, log lines lose the doubled `embers:` prefix, and a fork that failed before billing is no longer tallied. A running 0.2.0 process deletes `touch:` records, so restart open sessions after updating. 43 tests; `npm run check` clean.
 
 ## In flight
 
-Branch `fix/cold-pass-through`, PR open, not released. A resumed session whose handoff was never written (fork failed over a usage limit, or the process quit before the timer) sent its first prompt cold without asking: 328k tokens on a runnerd session on 2026-11-12. Fixes: a `touch:<session>` record per session seeds the cache on resume; every unasked cold send logs its reason to the debug log; log lines lose their doubled `embers:` prefix (the host adds one); a fork that failed before billing is no longer tallied. Review round 1 fixes: the touch is written on every turn with a context size, the resumed size comes from the local breakdown, debug lines lose the prefix too, and the prefix check fails tests even on paths that catch their own errors. 43 tests; `npm run check` clean.
+Nothing.
 
 ## Next
 
