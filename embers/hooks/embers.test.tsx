@@ -137,6 +137,8 @@ function engine(on: On, overrides: Partial<World> = {}): World {
     if (e.to !== 'transcript') return { value: undefined }
     // The terminal draws one line of 2000 characters: anything longer is mangled.
     if (e.text.includes('\n') || e.text.length > 2000) throw new Error(`a log line the terminal mangles: ${e.text}`)
+    // The host heads each line with the plugin's name: one of its own reads "embers: embers: ...".
+    if (e.text.startsWith('embers:')) throw new Error(`a log line the host prefixes twice: ${e.text}`)
     world.logged.push(e.text)
     return { value: undefined }
   })
@@ -540,7 +542,7 @@ test('Fresh at a cold prompt clears the session with no fork and no handoff row'
   expect(world.forks).toBe(0)
   expect(session.appended()).toEqual([])
   expect(world.logged).toEqual([
-    `embers: started a fresh session; send your prompt from the box. Old conversation: claude --resume ${SESSION}`,
+    `started a fresh session; send your prompt from the box. Old conversation: claude --resume ${SESSION}`,
   ])
   expect(await $.prompt.submit({ text: 'go on', ...typed })).toEqual({ text: 'go on' })
   expect(world.asks).toHaveLength(1)
@@ -638,7 +640,7 @@ test('a model change while idle forks nothing and stores no TTL from the cold re
   world.model = 'claude-other'
   await clock.advance(55 * MINUTE)
   expect(world.forks).toBe(0)
-  expect(world.logged).toEqual(['embers: handoff skipped, the model changed since the last turn'])
+  expect(world.logged).toEqual(['handoff skipped, the model changed since the last turn'])
 
   // Sent before any timer: the first request on the new model reads cold
   // after 10m, well inside the TTL. Taken for a lapse, it would make one
@@ -1191,7 +1193,7 @@ test('a load the host refuses is reported, not counted or shown as loaded', asyn
   await $.session.start(start)
   await clock.settle()
 
-  expect(world.logged).toEqual(['embers: the handoff was not loaded (too large)'])
+  expect(world.logged).toEqual(['the handoff was not loaded (too large)'])
   expect(world.placed).toEqual([])
   expect((await $.command.run(slash('embers', 'status'))).text).toContain('This month: nothing yet.')
 })

@@ -155,16 +155,16 @@ async function fire($: EngineInterface, config: Config): Promise<void> {
   if (cache.model !== model) {
     // The prefix is billed afresh after `/model`: a fork now pays for all of it.
     await apply($, forkSkipped)
-    $.ui.log('embers: handoff skipped, the model changed since the last turn')
+    $.ui.log('handoff skipped, the model changed since the last turn')
     return
   }
   if (now - cache.touchedAt >= ttl - SLACK_MS) {
     await apply($, forkSkipped)
-    $.ui.log(`embers: handoff skipped, the cache had already lapsed after ${minutesOf(now - cache.touchedAt)}m idle`)
+    $.ui.log(`handoff skipped, the cache had already lapsed after ${minutesOf(now - cache.touchedAt)}m idle`)
     return
   }
   // A log line, not a toast: the timer fires when nobody is looking.
-  $.ui.log(`embers: ${outcome(await writeHandoff($, config))}`)
+  $.ui.log(`${outcome(await writeHandoff($, config))}`)
 }
 
 /**
@@ -195,7 +195,7 @@ async function swap($: EngineInterface, record: HandoffRecord, plan: Reshape, re
     message: { type: 'user', content: [{ type: 'text', text: compose(record, 'swap') }] },
   })
   if (appended.deny !== undefined) {
-    $.ui.log(`embers: the session was cleared but the handoff was refused (${appended.deny}). ${resume}`)
+    $.ui.log(`the session was cleared but the handoff was refused (${appended.deny}). ${resume}`)
     return
   }
   // The handoff is in: what follows is feedback and bookkeeping, and its
@@ -210,7 +210,7 @@ async function swap($: EngineInterface, record: HandoffRecord, plan: Reshape, re
     .then(now => addStats($, now, { swaps: 1, swapSaved: swapSaving(plan.tokens, after) }))
     .catch(debug)
   $.ui.log(
-    `embers: swapped to the ${clockTime(record.writtenAt)} handoff, ${k(plan.tokens)} → ~${k(after)} tokens; send your prompt from the box. ${resume}`,
+    `swapped to the ${clockTime(record.writtenAt)} handoff, ${k(plan.tokens)} → ~${k(after)} tokens; send your prompt from the box. ${resume}`,
   )
 }
 
@@ -321,22 +321,22 @@ async function reshape($: EngineInterface, plan: Reshape): Promise<void> {
     // A hook can answer `/clear` without running it: only a new session id proves the clear.
     const newId = await $.session.id().catch(() => undefined)
     if (newId === undefined) {
-      $.ui.log(`embers: /clear ran but its result could not be checked; the handoff was not added. ${resume}`)
+      $.ui.log(`/clear ran but its result could not be checked; the handoff was not added. ${resume}`)
       return
     }
     if (newId === oldId) throw new Error('/clear left the conversation in place')
     isCleared = true
     await afterClear($)
     if (plan.swapTo === undefined) {
-      $.ui.log(`embers: started a fresh session; send your prompt from the box. ${resume}`)
+      $.ui.log(`started a fresh session; send your prompt from the box. ${resume}`)
       return
     }
     await swap($, plan.swapTo, plan, resume)
   } catch (error) {
     $.ui.log(
       isCleared
-        ? `embers: the session was cleared but the handoff was not added (${String(error)}). ${resume}`
-        : `embers: the session could not be cleared (${String(error)}); nothing changed`,
+        ? `the session was cleared but the handoff was not added (${String(error)}). ${resume}`
+        : `the session could not be cleared (${String(error)}); nothing changed`,
     )
   } finally {
     inProcess.isReshaping = false
@@ -421,13 +421,13 @@ export async function offerHandoff($: EngineInterface, config: Config): Promise<
     .append({ message: { type: 'user', content: [{ type: 'text', text: compose(offer, 'load') }] } })
     .catch((error: unknown) => ({ deny: String(error) }))
   if (appended.deny !== undefined) {
-    $.ui.log(`embers: the handoff was not loaded (${appended.deny})`)
+    $.ui.log(`the handoff was not loaded (${appended.deny})`)
     return
   }
   await addStats($, now, { loads: 1 })
   inProcess.lastShown = offer
   await showHandoff($, offer).catch(() => false)
-  $.ui.log(`embers: loaded the ${clockTime(offer.writtenAt)} handoff (~${k(handoffTokens(offer))} tokens)`)
+  $.ui.log(`loaded the ${clockTime(offer.writtenAt)} handoff (~${k(handoffTokens(offer))} tokens)`)
 }
 
 export async function status($: EngineInterface, config: Config): Promise<string> {
